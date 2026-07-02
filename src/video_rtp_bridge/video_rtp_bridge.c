@@ -489,7 +489,7 @@ static int arg_is_integer(const char *s)
 static int clamp_bitrate_kbps(int bitrate_kbps)
 {
     if (bitrate_kbps <= 0) {
-        return 1536;
+        return 4096;
     }
     if (bitrate_kbps < 512) {
         return 512;
@@ -639,7 +639,7 @@ int main(int argc, char **argv)
     remote_port = atoi(argv[2]);
     local_port = argc > 3 ? atoi(argv[3]) : 8002;
     payload_type = argc > 4 ? atoi(argv[4]) : 96;
-    bitrate_kbps = 1536;
+    bitrate_kbps = 4096;
     dumpfile = NULL;
     if (argc > 5) {
         if (arg_is_integer(argv[5])) {

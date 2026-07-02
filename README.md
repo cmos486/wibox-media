@@ -90,7 +90,7 @@ mqtt_host=192.168.0.203
 mqtt_user=wibox
 mqtt_pass=change-me
 video_enabled=1
-video_bitrate_kbps=1536
+video_bitrate_kbps=4096
 firmware_update_enabled=1
 prometheus_enabled=1
 ```

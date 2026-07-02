@@ -150,7 +150,7 @@ Current synthetic SIP tests on the WiBox show first RTP around 1.1 seconds after
 the video worker starts, with `stream_id 0` only.
 
 The production daemon passes `video_bitrate_kbps` from `/mnt/mtd/sip_media.conf`
-to the worker. The worker defaults to `1536` kbps and clamps requested values to
+to the worker. The worker defaults to `4096` kbps and clamps requested values to
 `512`-`4096` kbps before programming the stream-0 H.264 bitrate ioctls.
 
 The frame interval ioctl must match Sofia:

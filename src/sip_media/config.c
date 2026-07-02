@@ -36,7 +36,7 @@ void config_init_defaults(wibox_config_t* config) {
     config->video_enabled = 1;
     config->video_rtp_port = 8002;
     config->video_payload_type = 96;
-    config->video_bitrate_kbps = 1536;
+    config->video_bitrate_kbps = 4096;
 
     // Pipe Configuration
     strcpy(config->sip_listen_pipe, "/tmp/pipe_sip");

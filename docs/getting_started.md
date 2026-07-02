@@ -168,7 +168,7 @@ Important options:
 outgoing_call_target=sip:1000@192.168.0.31:5060
 outgoing_call_timeout=60
 video_enabled=1
-video_bitrate_kbps=1536
+video_bitrate_kbps=4096
 mqtt_enabled=1
 mqtt_host=192.168.0.203
 mqtt_user=wibox
