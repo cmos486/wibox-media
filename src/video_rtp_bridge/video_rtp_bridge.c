@@ -27,6 +27,8 @@
 #include <errno.h>
 #include <signal.h>
 #include <time.h>
+#include <sys/time.h>
+#include <ctype.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -96,6 +98,21 @@ static int gfd = -1;
 static volatile sig_atomic_t get_stream_timed_out = 0;
 static volatile sig_atomic_t stop_requested = 0;
 
+struct nal_cache {
+    uint8_t *data;
+    size_t len;
+};
+
+struct h264_scan {
+    int first_nal;
+    int last_nal;
+    int has_sps;
+    int has_pps;
+    int has_idr;
+    int has_slice;
+    int nal_count;
+};
+
 struct rtp_sender {
     int fd;
     struct sockaddr_in remote;
@@ -115,6 +132,13 @@ static void on_stop(int sig)
 {
     (void)sig;
     stop_requested = 1;
+}
+
+static long long now_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000LL + (tv.tv_usec / 1000);
 }
 
 static int get_stream_with_timeout(GADI_SYS_HandleT venc, int stream_id,
@@ -356,6 +380,126 @@ static int rtp_send_annexb(struct rtp_sender *rtp, const uint8_t *data, size_t l
     return sent;
 }
 
+static void nal_cache_set(struct nal_cache *cache, const uint8_t *nal, size_t nal_len)
+{
+    uint8_t *copy;
+
+    if (!cache || !nal || nal_len == 0) {
+        return;
+    }
+
+    copy = malloc(nal_len);
+    if (!copy) {
+        return;
+    }
+    memcpy(copy, nal, nal_len);
+    free(cache->data);
+    cache->data = copy;
+    cache->len = nal_len;
+}
+
+static int scan_annexb_nals(const uint8_t *data, size_t len,
+                            struct h264_scan *scan,
+                            struct nal_cache *sps_cache,
+                            struct nal_cache *pps_cache)
+{
+    const uint8_t *end = data + len;
+    const uint8_t *sc;
+    int sc_len = 0;
+
+    memset(scan, 0, sizeof(*scan));
+    scan->first_nal = -1;
+    scan->last_nal = -1;
+
+    sc = find_start_code(data, end, &sc_len);
+    if (!sc) {
+        int nal = len > 0 ? (data[0] & 0x1f) : -1;
+        scan->first_nal = nal;
+        scan->last_nal = nal;
+        scan->nal_count = nal >= 0 ? 1 : 0;
+        scan->has_sps = nal == 7;
+        scan->has_pps = nal == 8;
+        scan->has_idr = nal == 5;
+        scan->has_slice = nal == 1 || nal == 5;
+        if (nal == 7) nal_cache_set(sps_cache, data, len);
+        if (nal == 8) nal_cache_set(pps_cache, data, len);
+        return nal;
+    }
+
+    while (sc) {
+        const uint8_t *nal = sc + sc_len;
+        const uint8_t *next = find_start_code(nal, end, &sc_len);
+        const uint8_t *nal_end = next ? next : end;
+        int nal_type;
+
+        while (nal_end > nal && nal_end[-1] == 0) {
+            nal_end--;
+        }
+        if (nal_end > nal) {
+            nal_type = nal[0] & 0x1f;
+            if (scan->first_nal < 0) {
+                scan->first_nal = nal_type;
+            }
+            scan->last_nal = nal_type;
+            scan->nal_count++;
+            if (nal_type == 7) {
+                scan->has_sps = 1;
+                nal_cache_set(sps_cache, nal, (size_t)(nal_end - nal));
+            } else if (nal_type == 8) {
+                scan->has_pps = 1;
+                nal_cache_set(pps_cache, nal, (size_t)(nal_end - nal));
+            } else if (nal_type == 5) {
+                scan->has_idr = 1;
+                scan->has_slice = 1;
+            } else if (nal_type == 1) {
+                scan->has_slice = 1;
+            }
+        }
+        sc = next;
+    }
+    return scan->first_nal;
+}
+
+static int force_idr_stream0(const char *reason)
+{
+    uint32_t mask = 1; /* 1 << stream_id 0 */
+    int ret;
+
+    errno = 0;
+    ret = ioctl(gfd, IOC_FORCE_IDR, mask);
+    printf("[IDR] force_idr(%s) ret=%d errno=%d\n",
+           reason ? reason : "unknown", ret, errno);
+    return ret;
+}
+
+static int arg_is_integer(const char *s)
+{
+    if (!s || !*s) {
+        return 0;
+    }
+    while (*s) {
+        if (!isdigit((unsigned char)*s)) {
+            return 0;
+        }
+        s++;
+    }
+    return 1;
+}
+
+static int clamp_bitrate_kbps(int bitrate_kbps)
+{
+    if (bitrate_kbps <= 0) {
+        return 1536;
+    }
+    if (bitrate_kbps < 512) {
+        return 512;
+    }
+    if (bitrate_kbps > 4096) {
+        return 4096;
+    }
+    return bitrate_kbps;
+}
+
 static void set_frame_interval_stream(int stream_id)
 {
     struct {
@@ -473,15 +617,20 @@ int main(int argc, char **argv)
     int remote_port;
     int local_port;
     int payload_type;
+    int bitrate_kbps;
+    uint32_t main_cbr;
+    uint32_t main_min;
+    uint32_t main_max;
     const char *dumpfile;
     FILE *fout = NULL;
     struct rtp_sender rtp;
     GADI_ERR err;
     int ret;
+    long long worker_start_ms = now_ms();
 
     if (argc < 3) {
         fprintf(stderr,
-                "Usage: %s <remote_ip> <remote_video_port> [local_video_port] [payload_type] [dump.h264]\n",
+                "Usage: %s <remote_ip> <remote_video_port> [local_video_port] [payload_type] [bitrate_kbps] [dump.h264]\n",
                 argv[0]);
         return 1;
     }
@@ -490,7 +639,22 @@ int main(int argc, char **argv)
     remote_port = atoi(argv[2]);
     local_port = argc > 3 ? atoi(argv[3]) : 8002;
     payload_type = argc > 4 ? atoi(argv[4]) : 96;
-    dumpfile = argc > 5 ? argv[5] : NULL;
+    bitrate_kbps = 1536;
+    dumpfile = NULL;
+    if (argc > 5) {
+        if (arg_is_integer(argv[5])) {
+            bitrate_kbps = atoi(argv[5]);
+            dumpfile = argc > 6 ? argv[6] : NULL;
+        } else {
+            dumpfile = argv[5];
+        }
+    }
+    bitrate_kbps = clamp_bitrate_kbps(bitrate_kbps);
+    main_cbr = (uint32_t)bitrate_kbps * 1024U;
+    main_min = (uint32_t)(bitrate_kbps * 2 / 3) * 1024U;
+    main_max = (uint32_t)(bitrate_kbps * 4 / 3) * 1024U;
+    if (main_min < 512U * 1024U) main_min = 512U * 1024U;
+    if (main_max < main_cbr) main_max = main_cbr;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -508,6 +672,8 @@ int main(int argc, char **argv)
     printf("Remote: %s:%d\n", remote_ip, remote_port);
     printf("Local RTP port: %d\n", local_port);
     printf("Payload type: %d\n", payload_type);
+    printf("Target bitrate: %d kbps (cbr=%u min=%u max=%u)\n",
+           bitrate_kbps, main_cbr, main_min, main_max);
     if (dumpfile) printf("Debug dump: %s\n", dumpfile);
     printf("\n");
 
@@ -623,7 +789,7 @@ int main(int argc, char **argv)
     printf("[CONFIG] Streams 0/1/2 encode + H264 defaults...\n");
     set_frame_interval_stream(0);
     set_encode_format_stream(0, 0, 688, 576, 25);
-    set_h264_config_stream(0, 0xc0000, 0x80000, 0x140000);
+    set_h264_config_stream(0, main_cbr, main_min, main_max);
 
     set_frame_interval_stream(1);
     set_encode_format_stream(1, 1, 352, 300, 25);
@@ -636,23 +802,21 @@ int main(int argc, char **argv)
 
     err = gadi_vi_enable(vi_handle, 1);
     printf("[SDK] vi_enable(1): %s err=%d\n", err ? "FAIL" : "OK", err);
-    usleep(300000);
+    usleep(100000);
 
     /* ── START_STREAM ── */
     printf("[START] Starting streams...\n");
     {
         query_stream0("before");
-        const uint32_t masks[] = {1, 2, 4};
-        for (int m = 0; m < 3; m++) {
-            ret = -1;
-            for (int attempt = 0; attempt < 10; attempt++) {
-                errno = 0;
-                ret = ioctl(gfd, IOC_START_ENCODE, masks[m]);
-                printf("[START] mask=0x%x attempt=%d ret=%d errno=%d\n",
-                       masks[m], attempt + 1, ret, errno);
-                if (ret == 0) break;
-                usleep(200000);
-            }
+        ret = -1;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            errno = 0;
+            ret = ioctl(gfd, IOC_START_ENCODE, 1);
+            printf("[START] mask=0x1 attempt=%d/3 ret=%d errno=%d\n",
+                   attempt + 1, ret, errno);
+            if (ret == 0) break;
+            if (errno == EINVAL) break;
+            usleep(100000);
         }
         query_stream0("after");
         printf("\n");
@@ -660,29 +824,37 @@ int main(int argc, char **argv)
             fprintf(stderr, "START_STREAM failed, trying with factory state...\n");
         }
     }
-    usleep(300000);
+    usleep(50000);
 
-    /* ── FORCE IDR ── */
-    {
-        uint32_t ch = 1; /* Sofia passes a stream mask: 1 << streamId */
-        ret = ioctl(gfd, IOC_FORCE_IDR, ch);
-        printf("[IDR] force_idr ret=%d\n\n", ret);
-    }
-    usleep(100000);
+    force_idr_stream0("startup");
+    usleep(20000);
+    force_idr_stream0("startup-repeat");
+    usleep(20000);
 
     /* ── CAPTURE LOOP ── */
     printf("[CAPTURE] Starting RTP stream\n");
 
-    uint8_t *sps_buf = NULL, *pps_buf = NULL;
-    size_t   sps_len = 0,     pps_len = 0;
-    int sps_fresh = 0, pps_fresh = 0;
+    struct nal_cache sps_cache = {0};
+    struct nal_cache pps_cache = {0};
     long long total_bytes = 0;
     int frames = 0, idrs = 0, errors = 0;
     int seen_sid[16] = {0};
     int seen_nal[32] = {0};
+    int sent_parameter_sets_for_first_idr = 0;
+    int first_stream0_logged = 0;
+    int first_rtp_logged = 0;
+    int first_sps_logged = 0;
+    int first_pps_logged = 0;
+    int first_idr_logged = 0;
+    long long capture_start_ms = now_ms();
+    long long last_startup_idr_request_ms = 0;
+
+    printf("[VIDEO_STARTUP] capture_loop_start=%lldms\n",
+           capture_start_ms - worker_start_ms);
 
     for (int i = 0; !stop_requested && errors < 30; i++) {
         GADI_VENC_StreamT st;
+        struct h264_scan scan;
         memset(&st, 0, sizeof(st));
 
         ret = get_stream_with_timeout(venc_handle, 0xFF, &st);
@@ -694,54 +866,79 @@ int main(int argc, char **argv)
         uint8_t *data = st.addr;
         uint32_t  sz  = st.size;
 
-        if ((i % 50) == 0) {
-            uint32_t force = 1;
-            ioctl(gfd, IOC_FORCE_IDR, force);
-        }
-
-        /* Parse NAL type */
-        int nal = -1;
-        if (sz >= 5 && data[0]==0 && data[1]==0 && data[2]==0 && data[3]==1)
-            nal = data[4] & 0x1f;
-        else if (sz >= 4 && data[0]==0 && data[1]==0 && data[2]==1)
-            nal = data[3] & 0x1f;
+        int nal = scan_annexb_nals(data, sz, &scan,
+                                   st.stream_id == 0 ? &sps_cache : NULL,
+                                   st.stream_id == 0 ? &pps_cache : NULL);
 
         if (st.stream_id < 16) seen_sid[st.stream_id]++;
-        if (nal >= 0 && nal < 32) seen_nal[nal]++;
-        if (i < 40 || nal == 5 || nal == 7 || nal == 8) {
-            printf("  [pkt %03d] sid=%u nal=0x%02x sz=%u addr=%p\n",
-                   i, st.stream_id, nal, sz, st.addr);
+        if (st.stream_id == 0) {
+            for (int n = 0; n < 32; n++) {
+                /* Keep the compact legacy counters useful for the important startup NALs. */
+                if ((n == 1 && scan.has_slice && !scan.has_idr) ||
+                    (n == 5 && scan.has_idr) ||
+                    (n == 7 && scan.has_sps) ||
+                    (n == 8 && scan.has_pps)) {
+                    seen_nal[n]++;
+                }
+            }
+        } else if (nal >= 0 && nal < 32) {
+            seen_nal[nal]++;
+        }
+        if (i < 5 || scan.has_idr || scan.has_sps || scan.has_pps) {
+            printf("  [pkt %03d] sid=%u first_nal=0x%02x last_nal=0x%02x nals=%d sps=%d pps=%d idr=%d pic=%u sz=%u addr=%p\n",
+                   i, st.stream_id, scan.first_nal, scan.last_nal, scan.nal_count,
+                   scan.has_sps, scan.has_pps, scan.has_idr, st.pic_type, sz, st.addr);
         }
 
         /* Main stream only: stream_id == 0 */
         if (st.stream_id != 0) { usleep(1000); continue; }
 
-        if (nal == 7) { /* SPS */
-            free(sps_buf);
-            sps_buf = malloc(sz); memcpy(sps_buf, data, sz); sps_len = sz;
-            sps_fresh = 1; pps_fresh = 0;
+        if (!first_stream0_logged) {
+            printf("[VIDEO_STARTUP] first_stream0=%lldms size=%u first_nal=%d pic=%u\n",
+                   now_ms() - worker_start_ms, sz, scan.first_nal, st.pic_type);
+            first_stream0_logged = 1;
         }
-        if (nal == 8) { /* PPS */
-            free(pps_buf);
-            pps_buf = malloc(sz); memcpy(pps_buf, data, sz); pps_len = sz;
-            pps_fresh = 1;
+        if (scan.has_sps && !first_sps_logged) {
+            printf("[VIDEO_STARTUP] first_sps=%lldms\n", now_ms() - worker_start_ms);
+            first_sps_logged = 1;
         }
-        if (nal == 5) { /* IDR - write SPS+PPS first */
-            if (fout && sps_buf && sps_fresh) {
-                fwrite(sps_buf, 1, sps_len, fout);
-                total_bytes += sps_len;
-                sps_fresh = 0;
+        if (scan.has_pps && !first_pps_logged) {
+            printf("[VIDEO_STARTUP] first_pps=%lldms\n", now_ms() - worker_start_ms);
+            first_pps_logged = 1;
+        }
+        if (!scan.has_idr && idrs == 0) {
+            long long now = now_ms();
+            if (last_startup_idr_request_ms == 0 || now - last_startup_idr_request_ms >= 250) {
+                force_idr_stream0("waiting-first-idr");
+                last_startup_idr_request_ms = now;
             }
-            if (fout && pps_buf && pps_fresh) {
-                fwrite(pps_buf, 1, pps_len, fout);
-                total_bytes += pps_len;
-                pps_fresh = 0;
+        }
+        if (scan.has_idr || st.pic_type == GADI_VENC_IDR_FRAME) {
+            if (!first_idr_logged) {
+                printf("[VIDEO_STARTUP] first_idr=%lldms sps_cached=%d pps_cached=%d\n",
+                       now_ms() - worker_start_ms,
+                       sps_cache.data != NULL, pps_cache.data != NULL);
+                first_idr_logged = 1;
+            }
+            if (!sent_parameter_sets_for_first_idr) {
+                if (sps_cache.data && sps_cache.len) {
+                    rtp_send_nal(&rtp, sps_cache.data, sps_cache.len, 0);
+                }
+                if (pps_cache.data && pps_cache.len) {
+                    rtp_send_nal(&rtp, pps_cache.data, pps_cache.len, 0);
+                }
+                sent_parameter_sets_for_first_idr = 1;
+                printf("[VIDEO_STARTUP] sent_cached_parameter_sets=%lldms sps_len=%zu pps_len=%zu\n",
+                       now_ms() - worker_start_ms, sps_cache.len, pps_cache.len);
             }
             idrs++;
         }
         if (st.stream_id == 0) {
             if (rtp_send_annexb(&rtp, data, sz) < 0) {
                 printf("[RTP] send failed errno=%d (%s)\n", errno, strerror(errno));
+            } else if (!first_rtp_logged) {
+                printf("[VIDEO_STARTUP] first_rtp=%lldms\n", now_ms() - worker_start_ms);
+                first_rtp_logged = 1;
             }
             rtp.timestamp += 3600; /* 90 kHz / 25 fps */
             if (fout) {
@@ -749,10 +946,10 @@ int main(int argc, char **argv)
                 fflush(fout);
             }
             total_bytes += sz;
-            if (nal == 5 || nal == 1 || nal < 0) frames++;
+            if (scan.has_idr || scan.has_slice || nal < 0) frames++;
             if (frames % 25 == 0)
-                printf("  [%d frames] %lld bytes, %d IDRs (sid=%d nal=0x%02x sz=%u)\n",
-                       frames, total_bytes, idrs, st.stream_id, nal, sz);
+                printf("  [%d frames] %lld bytes, %d IDRs (sid=%d first_nal=0x%02x sz=%u)\n",
+                       frames, total_bytes, idrs, st.stream_id, scan.first_nal, sz);
         }
         usleep(3000);
     }
@@ -765,7 +962,7 @@ int main(int argc, char **argv)
     for (int n = 0; n < 32; n++) if (seen_nal[n]) printf(" %d=%d", n, seen_nal[n]);
     printf("\n");
     if (fout) fclose(fout);
-    free(sps_buf); free(pps_buf);
+    free(sps_cache.data); free(pps_cache.data);
 
     if (frames == 0) {
         fprintf(stderr, "\nNO FRAMES CAPTURED!\n");

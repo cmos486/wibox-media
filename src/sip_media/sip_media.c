@@ -607,11 +607,13 @@ static void start_video_session(const char* remote_ip, int remote_video_port) {
             close(log_fd);
         }
         _exit(video_worker_run(remote_ip, remote_video_port,
-                               app_config.video_rtp_port, payload_type, NULL));
+                               app_config.video_rtp_port, payload_type,
+                               app_config.video_bitrate_kbps, NULL));
     }
 
-    PJ_LOG(3,(THIS_FILE, "Started in-daemon video worker pid=%d to %s:%d payload=%d",
-              video_bridge_pid, remote_ip, remote_video_port, payload_type));
+    PJ_LOG(3,(THIS_FILE, "Started in-daemon video worker pid=%d to %s:%d payload=%d bitrate=%dkbps",
+              video_bridge_pid, remote_ip, remote_video_port, payload_type,
+              app_config.video_bitrate_kbps));
     mqtt_publish_video_active(1);
     prometheus_set_video_active(1);
     prometheus_inc_video_started();

@@ -90,11 +90,14 @@ mqtt_host=192.168.0.203
 mqtt_user=wibox
 mqtt_pass=change-me
 video_enabled=1
+video_bitrate_kbps=1536
 firmware_update_enabled=1
 prometheus_enabled=1
 ```
 
 Set `video_enabled=0` for audio-only installations.
+Increase `video_bitrate_kbps` if the client and WiFi link can handle more
+video bandwidth; the runtime clamps it to a practical range for the D1 encoder.
 
 ## Runtime Model
 

@@ -27,6 +27,7 @@ rtp_port=8000
 video_enabled=1
 video_rtp_port=8002
 video_payload_type=96
+video_bitrate_kbps=1536
 
 serial_listener_enabled=1
 intercom_device=/dev/ttySGK1
@@ -70,6 +71,11 @@ MCU, starts direct GADI audio, and starts the D1 video worker if video was
 negotiated and `video_enabled=1`.
 
 On hangup or failure, it stops media and sends `STOP_CALL` when needed.
+
+`video_bitrate_kbps` controls the target bitrate programmed into the D1 H.264
+encoder. The runtime default is `1536`; values are clamped between `512` and
+`4096` kbps. Higher values can reduce macroblocking, but low light, analog CVBS
+noise and client-side decode limits still affect quality.
 
 ## Intercom Serial
 

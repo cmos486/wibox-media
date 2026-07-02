@@ -168,6 +168,7 @@ Important options:
 outgoing_call_target=sip:1000@192.168.0.31:5060
 outgoing_call_timeout=60
 video_enabled=1
+video_bitrate_kbps=1536
 mqtt_enabled=1
 mqtt_host=192.168.0.203
 mqtt_user=wibox
@@ -177,6 +178,8 @@ prometheus_enabled=1
 ```
 
 Set `video_enabled=0` for audio-only doorphones.
+Raise `video_bitrate_kbps` for less blocky video if your WiFi and SIP client
+can handle the extra RTP bandwidth.
 
 Reboot after editing persistent config:
 

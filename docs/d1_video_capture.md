@@ -137,6 +137,22 @@ SPS/PPS/IDR are delivered in buffers whose first NAL type can be `7`. Do not
 discard these packets while waiting for a separate IDR packet; write them to the
 output.
 
+The daemon video worker parses every Annex-B NAL inside each VENC buffer, not
+only the first NAL. This matters because the first D1 buffer commonly contains
+SPS, PPS and IDR in a single buffer. The worker caches SPS/PPS and sends them
+before the first IDR over RTP so SIP clients can decode as soon as the first
+keyframe arrives.
+
+Startup latency note: only stream `0` is started for the production RTP path.
+Earlier experiments also tried substream masks `0x2` and `0x4`; `0x2` returns
+`EINVAL` on this hardware and repeated retries added visible call-answer delay.
+Current synthetic SIP tests on the WiBox show first RTP around 1.1 seconds after
+the video worker starts, with `stream_id 0` only.
+
+The production daemon passes `video_bitrate_kbps` from `/mnt/mtd/sip_media.conf`
+to the worker. The worker defaults to `1536` kbps and clamps requested values to
+`512`-`4096` kbps before programming the stream-0 H.264 bitrate ioctls.
+
 The frame interval ioctl must match Sofia:
 
 ```c
