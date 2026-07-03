@@ -654,12 +654,14 @@ static void publish_f1_button_config(void) {
 static void publish_snapshot_button_config(void) {
     char topic[256];
     char command_topic[256];
+    char availability_topic[256];
     char uid[192];
     char dev[512];
     char payload[1536];
 
     discovery_topic(topic, sizeof(topic), "button", "take_snapshot");
     topic_path(command_topic, sizeof(command_topic), "snapshot/take/set");
+    topic_path(availability_topic, sizeof(availability_topic), "snapshot/take/availability");
     unique_id(uid, sizeof(uid), "take_snapshot");
     device_json(dev, sizeof(dev));
 
@@ -667,7 +669,7 @@ static void publish_snapshot_button_config(void) {
              "{\"name\":\"Take Snapshot\",\"unique_id\":\"%s\","
              "\"command_topic\":\"%s\",\"payload_press\":\"PRESS\","
              "\"availability_topic\":\"%s\",\"icon\":\"mdi:camera\",%s}",
-             uid, command_topic, mqtt_state.base_topic, dev);
+             uid, command_topic, availability_topic, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
 
@@ -1145,6 +1147,10 @@ void mqtt_publish_wifi_stats(void) {
     }
 }
 
+void mqtt_publish_snapshot_available(int available) {
+    publish_suffix("snapshot/take/availability", available ? "online" : "offline", 1);
+}
+
 static int payload_is_on(const char* payload) {
     return payload &&
         (strcasecmp(payload, "ON") == 0 ||
@@ -1400,6 +1406,7 @@ static void* mqtt_thread_func(void* arg) {
             firmware_update_check_and_publish();
         }
         publish_suffix("door/unlocked", "OFF", 1);
+        mqtt_publish_snapshot_available(1);
         mqtt_publish_video_enabled(mqtt_state.video_enabled);
         mqtt_publish_video_bitrate(mqtt_state.video_bitrate_kbps);
         mqtt_publish_outgoing_call_timeout(mqtt_state.outgoing_call_timeout);

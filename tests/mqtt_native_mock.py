@@ -172,9 +172,17 @@ def main():
     if not any(topic.endswith("_take_snapshot/config") for topic, _ in published):
         print("missing snapshot button Home Assistant discovery publish", file=sys.stderr)
         return 1
+    if not any(topic.endswith("_take_snapshot/config") and
+               'snapshot/take/availability' in payload
+               for topic, payload in published):
+        print("missing snapshot button availability topic", file=sys.stderr)
+        return 1
     if not any(topic.endswith("_snapshot/config") and '"image_encoding":"b64"' in payload
                for topic, payload in published):
         print("missing snapshot image Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/snapshot/take/availability", "online") not in published:
+        print("missing snapshot initial availability publish", file=sys.stderr)
         return 1
     if ("wibox/test/call_forward/enabled", "ON") not in published:
         print("missing retained call forward initial state", file=sys.stderr)

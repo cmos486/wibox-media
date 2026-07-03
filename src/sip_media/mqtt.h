@@ -34,6 +34,7 @@ void mqtt_publish_media_state(const char* state);
 void mqtt_publish_firmware_version(void);
 void mqtt_publish_door_unlocked_pulse(void);
 void mqtt_publish_wifi_stats(void);
+void mqtt_publish_snapshot_available(int available);
 int mqtt_publish_snapshot_file(const char* path);
 
 #endif

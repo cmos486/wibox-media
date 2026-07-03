@@ -707,16 +707,19 @@ static void mqtt_take_snapshot_callback(void* user_data) {
     pthread_mutex_lock(&snapshot_mutex);
     if (snapshot_active) {
         pthread_mutex_unlock(&snapshot_mutex);
+        mqtt_publish_snapshot_available(0);
         printf("MQTT snapshot ignored - capture already active\n");
         return;
     }
     snapshot_active = 1;
     pthread_mutex_unlock(&snapshot_mutex);
+    mqtt_publish_snapshot_available(0);
 
     if (pthread_create(&thread, NULL, snapshot_thread_func, NULL) != 0) {
         pthread_mutex_lock(&snapshot_mutex);
         snapshot_active = 0;
         pthread_mutex_unlock(&snapshot_mutex);
+        mqtt_publish_snapshot_available(1);
         printf("Failed to create snapshot thread\n");
         return;
     }
@@ -792,6 +795,7 @@ done:
     pthread_mutex_lock(&snapshot_mutex);
     snapshot_active = 0;
     pthread_mutex_unlock(&snapshot_mutex);
+    mqtt_publish_snapshot_available(1);
     printf("Snapshot complete status=%d\n", status);
     return NULL;
 }

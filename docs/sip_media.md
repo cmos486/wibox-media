@@ -145,6 +145,7 @@ State topics:
 wibox/<hostname>/media/state
 wibox/<hostname>/door/unlocked
 wibox/<hostname>/snapshot/image
+wibox/<hostname>/snapshot/take/availability
 wibox/<hostname>/video/enabled
 wibox/<hostname>/video/bitrate_kbps
 wibox/<hostname>/call/timeout_seconds
@@ -171,7 +172,9 @@ established
 `snapshot/take/set` captures one D1 JPEG frame from the local camera path and
 publishes it to the MQTT Image entity at `snapshot/image`. The image payload is
 base64-encoded JPEG (`image_encoding=b64`) so Home Assistant can display the
-latest doorphone snapshot directly.
+latest doorphone snapshot directly. `snapshot/take/availability` is `offline`
+while a capture is running, so Home Assistant disables the `Take Snapshot`
+button until the worker completes.
 
 The `Video Enabled`, `Video Bitrate` and `Outgoing Call Timeout` entities are
 runtime configuration overrides. Without retained MQTT commands or file
