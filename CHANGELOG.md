@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/segator/wibox-media/compare/v0.9.0...v0.10.0) (2026-07-03)
+
+
+### Features
+
+* add automatic ring snapshots ([9183196](https://github.com/segator/wibox-media/commit/918319606a3691d509634b02ddf194edf8070e0f))
+
+
+### Bug Fixes
+
+* disable snapshot button while capture runs ([c2067a0](https://github.com/segator/wibox-media/commit/c2067a0982f7c0d6660bb246862cf7038bdba62b))
+
 ## [0.9.0](https://github.com/segator/wibox-media/compare/v0.8.0...v0.9.0) (2026-07-03)
 
 
