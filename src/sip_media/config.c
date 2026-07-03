@@ -79,6 +79,9 @@ void config_init_defaults(wibox_config_t* config) {
     // Audio Configuration
     config->audio_buffer_size = 160;
     config->audio_chip_gpio = 18;
+    config->audio_input_gain_percent = 35;
+    config->audio_output_volume_percent = 50;
+    config->audio_line_mute_ms = 900;
 }
 
 static int parse_config_line(const char* line, wibox_config_t* config) {
@@ -222,6 +225,12 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
         config->audio_buffer_size = atoi(value);
     } else if (strcmp(key, "audio_chip_gpio") == 0) {
         config->audio_chip_gpio = atoi(value);
+    } else if (strcmp(key, "audio_input_gain_percent") == 0) {
+        config->audio_input_gain_percent = atoi(value);
+    } else if (strcmp(key, "audio_output_volume_percent") == 0) {
+        config->audio_output_volume_percent = atoi(value);
+    } else if (strcmp(key, "audio_line_mute_ms") == 0) {
+        config->audio_line_mute_ms = atoi(value);
     } else if (strcmp(key, "pipe_retry_interval_ms") == 0) {
         return 0; /* legacy named-pipe config, ignored */
     } else if (strcmp(key, "pipe_retry_max_attempts") == 0) {
@@ -322,5 +331,8 @@ void config_print(const wibox_config_t* config) {
     printf("prometheus_port = %d\n", config->prometheus_port);
     printf("audio_buffer_size = %d\n", config->audio_buffer_size);
     printf("audio_chip_gpio = %d\n", config->audio_chip_gpio);
+    printf("audio_input_gain_percent = %d\n", config->audio_input_gain_percent);
+    printf("audio_output_volume_percent = %d\n", config->audio_output_volume_percent);
+    printf("audio_line_mute_ms = %d\n", config->audio_line_mute_ms);
     printf("============================\n");
 }

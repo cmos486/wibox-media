@@ -54,6 +54,9 @@ typedef struct {
     // Audio Configuration
     int audio_buffer_size;
     int audio_chip_gpio;
+    int audio_input_gain_percent;
+    int audio_output_volume_percent;
+    int audio_line_mute_ms;
 } wibox_config_t;
 
 /**

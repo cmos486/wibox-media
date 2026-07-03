@@ -57,3 +57,6 @@ prometheus_port=9617
 # Audio Configuration
 audio_buffer_size=160
 audio_chip_gpio=18
+audio_input_gain_percent=35
+audio_output_volume_percent=50
+audio_line_mute_ms=900

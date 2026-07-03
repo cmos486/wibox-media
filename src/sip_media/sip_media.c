@@ -17,6 +17,7 @@
 #include <errno.h>           // Error numbers
 #include <unistd.h>          // For access()
 #include <sys/stat.h>        // For mkfifo()
+#include <sys/time.h>        // For gettimeofday()
 #include <ctype.h>           // Character classification
 
 #include "sip_calling.h"     // Our unified SIP calling module
@@ -36,6 +37,7 @@
 #define RING_SNAPSHOT_DELAY_MIN_MS 0
 #define RING_SNAPSHOT_DELAY_MAX_MS 5000
 #define RING_SNAPSHOT_DELAY_STEP_MS 500
+#define AUDIO_LINE_MUTE_MAX_MS 3000
 
 #define RTP_PAYLOAD_DTMF 101    // Common DTMF payload type
 #define DTMF_EVENT_0     0
@@ -60,9 +62,11 @@ static pj_thread_t *audio_input_thread;   // Thread handle for AI -> RTP
 static pj_thread_t *audio_output_thread;  // Thread handle for RTP -> AO
 static pthread_mutex_t audio_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t audio_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t audio_mute_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t video_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int audio_engine_running = 0;
 static int audio_sip_rtp_active = 0;
+static unsigned long long audio_input_mute_until_ms = 0;
 static pid_t video_bridge_pid = -1;
 static int video_bridge_has_sip_rtp = 0;
 static int video_bridge_control_fd = -1;
@@ -88,6 +92,45 @@ typedef struct {
     pj_thread_desc desc;
     pj_thread_t *thread;
 } pj_external_thread_t;
+
+static unsigned long long now_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return ((unsigned long long)tv.tv_sec * 1000ULL) + ((unsigned long long)tv.tv_usec / 1000ULL);
+}
+
+static void mute_audio_input_for_ms(int duration_ms, const char* reason)
+{
+    unsigned long long until;
+
+    if (duration_ms <= 0) {
+        return;
+    }
+    if (duration_ms > AUDIO_LINE_MUTE_MAX_MS) {
+        duration_ms = AUDIO_LINE_MUTE_MAX_MS;
+    }
+
+    until = now_ms() + (unsigned int)duration_ms;
+    pthread_mutex_lock(&audio_mute_mutex);
+    if (until > audio_input_mute_until_ms) {
+        audio_input_mute_until_ms = until;
+    }
+    pthread_mutex_unlock(&audio_mute_mutex);
+
+    PJ_LOG(3,(THIS_FILE, "Muting audio input for %dms reason=%s",
+              duration_ms, reason ? reason : "unknown"));
+}
+
+static int audio_input_is_muted(void)
+{
+    int muted;
+
+    pthread_mutex_lock(&audio_mute_mutex);
+    muted = now_ms() < audio_input_mute_until_ms;
+    pthread_mutex_unlock(&audio_mute_mutex);
+    return muted;
+}
 
 static pthread_key_t pj_external_thread_key;
 static pthread_once_t pj_external_thread_key_once = PTHREAD_ONCE_INIT;
@@ -616,6 +659,7 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
     // Handle call establishment (both incoming and outgoing)
     if (new_state == SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_ESTABLISHED) {
         PJ_LOG(3,(THIS_FILE, "Call established - sending START_CALL to intercom"));
+        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-start");
         intercom_send_command(INTERCOM_CMD_START_CALL);
         set_call_active_status(PJ_TRUE);
         mqtt_publish_call_active(1);
@@ -632,6 +676,7 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
     if (old_state == SIP_CALL_STATE_ESTABLISHED &&
         (new_state == SIP_CALL_STATE_IDLE || new_state == SIP_CALL_STATE_FAILED)) {
         PJ_LOG(3,(THIS_FILE, "Established call terminated - sending STOP_CALL to intercom"));
+        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-stop");
         intercom_send_command(INTERCOM_CMD_STOP_CALL);
         release_sip_video_or_stop("established-call-ended");
         stop_audio_session();
@@ -1903,6 +1948,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         break;
     case UART_CODE_START_CALL:
         PJ_LOG(3,(THIS_FILE, "Intercom call line is active"));
+        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "uart-start-call");
         set_call_active_status(PJ_TRUE);
         mqtt_publish_call_active(1);
         break;
@@ -2165,6 +2211,10 @@ static void* audio_input_handler(void* arg) {
             bytes_read = app_config.audio_buffer_size;
         }
 
+        if (audio_input_is_muted()) {
+            memset(audio_buffer, 0xD5, (size_t)bytes_read);
+        }
+
         // Always send RTP packet (either real audio or error pattern)
         // Create RTP packet
         // RTP Header (12 bytes)
@@ -2309,7 +2359,9 @@ static int ensure_audio_engine_running(const char* reason) {
     PJ_LOG(3,(THIS_FILE, "Starting audio engine reason=%s",
               reason ? reason : "unknown"));
 
-    if (audio_hw_start(app_config.audio_chip_gpio, app_config.audio_buffer_size) < 0) {
+    if (audio_hw_start(app_config.audio_chip_gpio, app_config.audio_buffer_size,
+                       app_config.audio_input_gain_percent,
+                       app_config.audio_output_volume_percent) < 0) {
         PJ_LOG(1,(THIS_FILE, "Failed to start audio hardware"));
         pthread_mutex_unlock(&audio_lifecycle_mutex);
         return -1;

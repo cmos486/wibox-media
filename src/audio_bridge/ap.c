@@ -48,14 +48,16 @@ static int ap_aec_init(int sample_rate, int frame_samples)
     audio_process_attr.sampleRate = sample_rate;
     audio_process_attr.frameSamples = frame_samples;
 
-    audio_process_attr.aecMode = AUDIO_PROCESS_AEC_FLOAT;   // float vs. fixed
-    audio_process_attr.agcEnable = AUDIO_PROCESS_TRUE;      // automatic gain control
+    /* Keep AGC disabled: it boosts sudden panel/street transients into loud pops. */
+    audio_process_attr.aecMode = AUDIO_PROCESS_AEC_FLOAT;
+    audio_process_attr.agcEnable = AUDIO_PROCESS_FALSE;
     audio_process_attr.nsEnable = AUDIO_PROCESS_TRUE;       // noise suppression on/off
 
-    audio_process_attr.nsParam= 2;          // Noise suppression: 0-3, default 2
-    audio_process_attr.aecFixedParam = 0;   // 0-4, default unclear
-    audio_process_attr.aecFloatParam = 1;   // 0-2, default unclear
-    audio_process_attr.agcParam= 9;         // 0-90, default 9
+    /* Sofia-derived echo/noise parameters for the Fermax WiBox audio path. */
+    audio_process_attr.nsParam= 0;
+    audio_process_attr.aecFixedParam = 3;
+    audio_process_attr.aecFloatParam = 0;
+    audio_process_attr.agcParam= 0;
 
     return audio_process_init(&audio_process_attr);
 }

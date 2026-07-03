@@ -88,6 +88,15 @@ int main(void) {
     state.call_forward_value = -1;
 
     config_init_defaults(&config);
+    if (config.audio_input_gain_percent != 35 ||
+        config.audio_output_volume_percent != 50 ||
+        config.audio_line_mute_ms != 900) {
+        fprintf(stderr, "unexpected audio defaults: input=%d output=%d mute=%d\n",
+                config.audio_input_gain_percent,
+                config.audio_output_volume_percent,
+                config.audio_line_mute_ms);
+        return 4;
+    }
     config.mqtt_enabled = 1;
     strcpy(config.mqtt_host, "127.0.0.1:18883");
     strcpy(config.mqtt_user, "wibox");

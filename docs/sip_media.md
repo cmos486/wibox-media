@@ -61,6 +61,9 @@ prometheus_port=9617
 
 audio_buffer_size=160
 audio_chip_gpio=18
+audio_input_gain_percent=35
+audio_output_volume_percent=50
+audio_line_mute_ms=900
 ```
 
 Leave `mqtt_base_topic`, `mqtt_device_id` and `mqtt_device_name` empty unless
@@ -87,6 +90,22 @@ start audio-only until video is enabled from Home Assistant, retained MQTT, or
 `/mnt/mtd/sip_media.conf`.
 
 On hangup or failure, it stops media and sends `STOP_CALL` when needed.
+
+## Audio Tuning
+
+The daemon uses direct GADI audio with PCMA/A-law at 8 kHz. The default audio
+path is tuned for the Fermax WiBox analog panel, where short street noises can
+otherwise be amplified into loud pops:
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `audio_input_gain_percent` | `35` | Microphone capture gain. Lower values reduce clipping and loud transient pops from the outside panel. |
+| `audio_output_volume_percent` | `50` | Speaker/output volume sent to the intercom audio path. |
+| `audio_line_mute_ms` | `900` | Short input mute applied when the intercom line is opened or closed. This masks hardware start/stop transients while RTP timing stays continuous. Values above `3000` ms are clamped. |
+
+The low-level echo/noise processing is aligned with the original Sofia audio
+path, but automatic gain control is disabled. Keeping gain fixed avoids boosting
+sudden street noises into exaggerated pops.
 
 `video_bitrate_kbps` controls the target bitrate programmed into the D1 H.264
 encoder. The runtime default is `4096`; values are clamped between `512` and
