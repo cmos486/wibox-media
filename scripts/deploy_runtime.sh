@@ -34,8 +34,15 @@ fi
 echo "[*] Restarting temporary daemon"
 sshpass -p "${WIBOX_PASS}" ssh ${SSH_OPTS} "${WIBOX_USER}@${WIBOX_IP}" "
 set -eu
-killall wibox-media-daemon 2>/dev/null || true
+PIDS=\$(ps | awk '\$4 ~ /(^|\\/)wibox-media-daemon\$/ {print \$1}')
+if [ -n \"\$PIDS\" ]; then
+  kill \$PIDS 2>/dev/null || true
+fi
 sleep 2
+PIDS=\$(ps | awk '\$4 ~ /(^|\\/)wibox-media-daemon\$/ {print \$1}')
+if [ -n \"\$PIDS\" ]; then
+  kill -9 \$PIDS 2>/dev/null || true
+fi
 cd '${REMOTE_DIR}'
 export LD_LIBRARY_PATH='${REMOTE_DIR}/lib:/usr/lib:/lib'
 mkdir -p /var/log

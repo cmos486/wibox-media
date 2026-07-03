@@ -38,6 +38,13 @@ void config_init_defaults(wibox_config_t* config) {
     config->video_payload_type = 96;
     config->video_bitrate_kbps = 4096;
     config->ring_snapshot_delay_ms = 2000;
+    config->video_recording_enabled = 0;
+    strcpy(config->video_recording_path, "/tmp/wibox-last-call.h264");
+    config->video_recording_max_seconds = 30;
+    config->rtsp_enabled = 0;
+    config->rtsp_port = 8554;
+    config->rtsp_auth_user[0] = '\0';
+    config->rtsp_auth_pass[0] = '\0';
 
     // Pipe Configuration
     strcpy(config->sip_listen_pipe, "/tmp/pipe_sip");
@@ -124,6 +131,23 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
         config->video_bitrate_kbps = atoi(value);
     } else if (strcmp(key, "ring_snapshot_delay_ms") == 0) {
         config->ring_snapshot_delay_ms = atoi(value);
+    } else if (strcmp(key, "video_recording_enabled") == 0) {
+        config->video_recording_enabled = atoi(value);
+    } else if (strcmp(key, "video_recording_path") == 0) {
+        strncpy(config->video_recording_path, value, sizeof(config->video_recording_path) - 1);
+        config->video_recording_path[sizeof(config->video_recording_path) - 1] = '\0';
+    } else if (strcmp(key, "video_recording_max_seconds") == 0) {
+        config->video_recording_max_seconds = atoi(value);
+    } else if (strcmp(key, "rtsp_enabled") == 0) {
+        config->rtsp_enabled = atoi(value);
+    } else if (strcmp(key, "rtsp_port") == 0) {
+        config->rtsp_port = atoi(value);
+    } else if (strcmp(key, "rtsp_auth_user") == 0) {
+        strncpy(config->rtsp_auth_user, value, sizeof(config->rtsp_auth_user) - 1);
+        config->rtsp_auth_user[sizeof(config->rtsp_auth_user) - 1] = '\0';
+    } else if (strcmp(key, "rtsp_auth_pass") == 0) {
+        strncpy(config->rtsp_auth_pass, value, sizeof(config->rtsp_auth_pass) - 1);
+        config->rtsp_auth_pass[sizeof(config->rtsp_auth_pass) - 1] = '\0';
     } else if (strcmp(key, "video_bridge_path") == 0) {
         return 0; /* legacy standalone video bridge config, ignored */
     } else if (strcmp(key, "audio_ai_pipe") == 0) {
@@ -258,6 +282,13 @@ void config_print(const wibox_config_t* config) {
     printf("video_payload_type = %d\n", config->video_payload_type);
     printf("video_bitrate_kbps = %d\n", config->video_bitrate_kbps);
     printf("ring_snapshot_delay_ms = %d\n", config->ring_snapshot_delay_ms);
+    printf("video_recording_enabled = %d\n", config->video_recording_enabled);
+    printf("video_recording_path = %s\n", config->video_recording_path);
+    printf("video_recording_max_seconds = %d\n", config->video_recording_max_seconds);
+    printf("rtsp_enabled = %d\n", config->rtsp_enabled);
+    printf("rtsp_port = %d\n", config->rtsp_port);
+    printf("rtsp_auth_user = %s\n", config->rtsp_auth_user);
+    printf("rtsp_auth_pass = %s\n", config->rtsp_auth_pass[0] ? "[set]" : "");
     printf("sip_listen_pipe = %s\n", config->sip_listen_pipe);
     printf("ding_message = %s\n", config->ding_message);
     printf("serial_listener_enabled = %d\n", config->serial_listener_enabled);

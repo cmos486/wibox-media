@@ -13,6 +13,13 @@ typedef struct {
     int video_payload_type;
     int video_bitrate_kbps;
     int ring_snapshot_delay_ms;
+    int video_recording_enabled;
+    char video_recording_path[256];
+    int video_recording_max_seconds;
+    int rtsp_enabled;
+    int rtsp_port;
+    char rtsp_auth_user[64];
+    char rtsp_auth_pass[64];
 
     // Pipe Configuration
     char sip_listen_pipe[256];

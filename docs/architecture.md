@@ -33,7 +33,7 @@ It owns:
 - PCMA RTP audio on UDP `8000` by default;
 - optional H.264 RTP video on UDP `8002` by default;
 - direct GADI audio hardware setup and teardown;
-- D1 video worker lifecycle;
+- D1 video worker lifecycle and sink attachment;
 - DTMF door unlock from RTP telephone-event and SIP INFO;
 - MQTT/Home Assistant discovery, commands and state;
 - firmware update checks and install requests;
@@ -52,7 +52,7 @@ Doorbell-originated call:
   -> SIP established
   -> START_CALL to /dev/ttySGK1
   -> audio RTP starts
-  -> video worker starts if negotiated and video_enabled=1
+  -> video worker starts or attaches SIP if negotiated and video_enabled=1
   -> media/state = established
 ```
 
@@ -60,11 +60,55 @@ Hangup/timeout:
 
 ```text
 SIP BYE, SIP failure, HANG_UP or CMD_STOP_RING
-  -> video worker stops
-  -> audio stops
+  -> SIP video target is detached
+  -> video worker stops only when no RTSP clients remain
+  -> SIP audio target is detached
+  -> audio engine stops only when no RTSP clients remain
   -> STOP_CALL when an established panel context exists
   -> media/state = idle
 ```
+
+## Media Runtime
+
+The RTSP server and the video worker are separate responsibilities:
+
+```text
+wibox-media-daemon
+  -> RTSP server listens on :8554 while enabled
+  -> one video worker owns /dev/gk_video and the GADI encoder
+```
+
+The RTSP server accepts clients while idle. It does not open the camera by
+itself. `rtsp_enabled` only controls the listener. `video_enabled` is the global
+video capability flag: when it is `0`, RTSP advertises audio-only and the video
+worker is never started; when it is `1`, the first RTSP video client reaching
+`PLAY` starts the same video worker used for SIP video and tees H.264 RTP into
+RTSP.
+
+There are not separate "SIP" and "preview" video workers. There is one worker
+with dynamic sinks:
+
+```text
+stream_id=0 H.264 D1 688x576
+  -> SIP RTP sink, when a SIP call is established
+  -> RTSP sink, when RTSP clients are connected
+
+stream_id=2 MJPEG 352x288
+  -> snapshot capture, when requested
+```
+
+If RTSP/go2rtc is already connected and a SIP call is established, the daemon
+attaches the SIP RTP target to the existing worker with a control command. When
+the SIP call ends, the SIP RTP target is cleared and the worker keeps feeding
+RTSP. The worker is stopped only after the last RTSP client disconnects and no
+SIP target is attached.
+
+Audio is managed by the daemon, not by the video worker. RTSP clients that set
+up the audio track start the shared audio engine and receive PCMA RTP packets.
+When a SIP call is established, the SIP audio RTP target is attached to that
+same engine; when the call ends, only the SIP target is cleared. The audio
+engine stops after the last RTSP client disconnects and no SIP target remains.
+This also supports audio-only RTSP when `rtsp_enabled=1` and `video_enabled=0`.
 
 Door unlock:
 
@@ -110,6 +154,7 @@ sensor.firmware_build_timestamp
 binary_sensor.door_unlocked
 sensor.wifi_rssi
 switch.video_enabled
+switch.rtsp_enabled
 binary_sensor.firmware_update_available
 sensor.firmware_update_version
 button.firmware_update_refresh

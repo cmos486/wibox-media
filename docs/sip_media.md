@@ -28,6 +28,14 @@ video_enabled=0
 video_rtp_port=8002
 video_payload_type=96
 video_bitrate_kbps=4096
+video_recording_enabled=0
+video_recording_path=/tmp/wibox-last-call.h264
+video_recording_max_seconds=30
+rtsp_enabled=0
+rtsp_port=8554
+rtsp_auth_user=
+rtsp_auth_pass=
+ring_snapshot_delay_ms=2000
 
 serial_listener_enabled=1
 intercom_device=/dev/ttySGK1
@@ -67,10 +75,12 @@ DTMF:  telephone-event/8000
 ```
 
 When a SIP call is established, the daemon sends `START_CALL` to the intercom
-MCU, starts direct GADI audio, and starts the D1 video worker if video was
-negotiated and `video_enabled=1`. The factory default is `video_enabled=0`, so
-fresh installations start audio-only until video is enabled from Home Assistant,
-retained MQTT, or `/mnt/mtd/sip_media.conf`.
+MCU and starts direct GADI audio. `video_enabled` is the global video capability
+flag: when it is `0`, no video is advertised or captured anywhere. When it is
+`1`, SIP advertises H.264 and starts the D1 video worker if video was
+negotiated. The factory default is `video_enabled=0`, so fresh installations
+start audio-only until video is enabled from Home Assistant, retained MQTT, or
+`/mnt/mtd/sip_media.conf`.
 
 On hangup or failure, it stops media and sends `STOP_CALL` when needed.
 
@@ -78,6 +88,97 @@ On hangup or failure, it stops media and sends `STOP_CALL` when needed.
 encoder. The runtime default is `4096`; values are clamped between `512` and
 `4096` kbps. Higher values can reduce macroblocking, but low light, analog CVBS
 noise and client-side decode limits still affect quality.
+
+## Video Recording
+
+Recording to file is intentionally disabled by default:
+
+```ini
+video_recording_enabled=0
+video_recording_path=/tmp/wibox-last-call.h264
+video_recording_max_seconds=30
+```
+
+At `4096` kbps, 30 seconds is about 15 MiB. That only fits in `/tmp` with little
+headroom and must never be written to `/mnt/mtd` or other flash-backed storage.
+
+## Experimental RTSP Stream
+
+The daemon can expose an RTSP/TCP interleaved stream for go2rtc, Frigate or VLC:
+
+```ini
+rtsp_enabled=1
+rtsp_port=8554
+rtsp_auth_user=
+rtsp_auth_pass=
+```
+
+URL:
+
+```text
+rtsp://<wibox-ip>:8554/live
+```
+
+Tracks:
+
+```text
+video: H264/90000, payload 96
+audio: PCMA/8000, payload 8
+```
+
+`rtsp_enabled` controls only whether the RTSP service listens. `video_enabled`
+still controls whether RTSP advertises and captures video. With
+`video_enabled=0`, RTSP remains valid but advertises only the PCMA audio track.
+With both `rtsp_enabled=1` and `video_enabled=1`, RTSP advertises H.264 video
+and PCMA audio.
+
+The RTSP server accepts clients while idle. When a video client is connected and
+global video is enabled, the daemon starts the same D1 H.264 worker used for
+SIP video and tees its RTP packets into RTSP. With no active panel call, the
+video frames may be blue/static; the stream becomes real panel video when the
+outside panel opens its video path during a ring or `START_CALL`.
+
+There is only one video worker. RTSP "preview" means that this worker is running
+without a SIP RTP target. During an established SIP call, the daemon attaches
+the SIP RTP target to the existing worker with a control command. When the call
+ends, the SIP RTP target is cleared; if an RTSP client is still connected, the
+worker keeps running and RTSP continues without an encoder restart. The worker
+is stopped only when no SIP target is attached and no RTSP video clients remain.
+
+Audio is not owned by the video worker. RTSP clients that negotiated the audio
+track start the shared audio engine and receive PCMA RTP packets. During an
+established SIP call, the daemon attaches the SIP audio RTP target to that same
+engine. When the call ends, only the SIP RTP target is cleared if RTSP clients
+are still connected; audio stops after the last RTSP client disconnects and no
+SIP target remains.
+
+Optional RTSP Basic authentication is enabled by setting `rtsp_auth_user` or
+`rtsp_auth_pass`. Clients then use:
+
+```text
+rtsp://<user>:<password>@<wibox-ip>:8554/live
+```
+
+RTSP Basic auth is plaintext on the LAN. It prevents accidental unauthenticated
+clients; it is not a replacement for network-level isolation.
+
+## Network Endpoints
+
+The custom image exposes small LAN services intended for a trusted home network:
+
+| Endpoint | Default | Auth | Purpose |
+|----------|---------|------|---------|
+| SSH | TCP 22 | Dropbear password/key auth | administration and recovery |
+| SIP | UDP 5060 | none | call signaling |
+| RTP audio | UDP 8000 | none | PCMA media for SIP |
+| RTP video | UDP 8002 | none | H.264 media for SIP when `video_enabled=1` |
+| RTSP | TCP 8554 | optional Basic auth | Frigate/go2rtc/VLC stream when `rtsp_enabled=1` |
+| Prometheus | TCP 9617 | none | `/metrics` and `/healthz` |
+| MQTT | outbound TCP 1883 | broker credentials | Home Assistant integration |
+
+Do not expose SIP/RTP, RTSP or Prometheus directly to the internet. Keep them on
+the LAN/VPN, or restrict them with the router/firewall. RTSP Basic auth is useful
+for accidental LAN access, but it is not encrypted.
 
 ## Intercom Serial
 
@@ -133,6 +234,7 @@ wibox/<hostname>/f1/trigger/set = PRESS
 wibox/<hostname>/snapshot/take/set = PRESS
 wibox/<hostname>/snapshot/ring_delay_ms/set = 0..5000
 wibox/<hostname>/video/enabled/set = ON|OFF
+wibox/<hostname>/rtsp/enabled/set = ON|OFF
 wibox/<hostname>/video/bitrate_kbps/set = 512..4096
 wibox/<hostname>/call/timeout_seconds/set = 10..120
 wibox/<hostname>/call_forward/enabled/set = ON|OFF
@@ -149,6 +251,7 @@ wibox/<hostname>/snapshot/image
 wibox/<hostname>/snapshot/take/availability
 wibox/<hostname>/snapshot/ring_delay_ms
 wibox/<hostname>/video/enabled
+wibox/<hostname>/rtsp/enabled
 wibox/<hostname>/video/bitrate_kbps
 wibox/<hostname>/call/timeout_seconds
 wibox/<hostname>/call_forward/enabled
@@ -171,12 +274,21 @@ established
 
 `door/unlocked` is a short pulse: `ON` then `OFF`.
 
-`snapshot/take/set` captures one D1 JPEG frame from the local camera path and
-publishes it to the MQTT Image entity at `snapshot/image`. The image payload is
-base64-encoded JPEG (`image_encoding=b64`) so Home Assistant can display the
-latest doorphone snapshot directly. `snapshot/take/availability` is `offline`
-while a capture is running, so Home Assistant disables the `Take Snapshot`
-button until the worker completes.
+`snapshot/take/set` captures one JPEG frame and publishes it to the MQTT Image
+entity at `snapshot/image`. The image payload is base64-encoded JPEG
+(`image_encoding=b64`) so Home Assistant can display the latest doorphone
+snapshot directly. `snapshot/take/availability` is `offline` while a capture is
+running or while `video_enabled=0`, so Home Assistant disables the
+`Take Snapshot` button until the worker completes or video is enabled.
+
+Snapshots require `video_enabled=1`. When no video worker is active, snapshots
+use the standalone MJPEG path on
+`stream_id=0` and capture D1 `688x576`. When RTSP/go2rtc or SIP video is already
+active, the daemon keeps the `stream_id=0` H.264 D1 worker running and asks that
+same worker to start `stream_id=2` MJPEG at `352x288` for the snapshot. This
+avoids a second `/dev/gk_video` owner and keeps the RTSP/SIP video stream alive.
+Small initial JPEG frames are discarded so the published snapshot is taken after
+the panel video has settled.
 
 Real outside-panel rings (`ALARM_REPORT`) also trigger an automatic snapshot.
 The daemon waits for `Ring Snapshot Delay` (`snapshot/ring_delay_ms`, default
@@ -185,15 +297,22 @@ The daemon waits for `Ring Snapshot Delay` (`snapshot/ring_delay_ms`, default
 path for that ring. Manual snapshots still open a temporary panel context
 because cold captures without it produce a blue frame.
 
-The `Video Enabled`, `Video Bitrate`, `Outgoing Call Timeout` and `Ring Snapshot
-Delay` entities are runtime configuration overrides. Without retained MQTT
-commands or file overrides, the built-in defaults are `video_enabled=0`,
-`video_bitrate_kbps=4096`, `outgoing_call_timeout=60` and
-`ring_snapshot_delay_ms=2000`. The boot default still comes from
+The `Video Enabled`, `RTSP Enabled`, `Video Bitrate`, `Outgoing Call Timeout`
+and `Ring Snapshot Delay` entities are runtime configuration overrides. Without
+retained MQTT commands or file overrides, the built-in defaults are
+`video_enabled=0`, `rtsp_enabled=0`, `video_bitrate_kbps=4096`,
+`outgoing_call_timeout=60` and `ring_snapshot_delay_ms=2000`. The boot default
+still comes from
 `/mnt/mtd/sip_media.conf` when a key is present, but Home Assistant publishes
 these command topics as retained MQTT messages, so the last selected value is
 replayed after a daemon or WiBox reboot and takes priority over the file value.
 The daemon republishes the accepted/clamped state separately.
+
+Retained MQTT messages are only accepted for configuration topics. Retained
+button/action topics such as `door/open/set`, `snapshot/take/set`,
+`firmware/update/check/set` and `firmware/update/install/set` are ignored so a
+broker reconnect or daemon restart cannot replay a door unlock, snapshot or
+firmware update.
 
 Video resolution is not exposed over MQTT because only D1 `688x576` is currently
 validated. If more modes are added, they should be exposed as a closed MQTT

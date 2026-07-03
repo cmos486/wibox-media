@@ -4,11 +4,13 @@ Custom firmware for the Fermax WiBox GK7102S intercom. It replaces the vendor
 cloud/app workflow with a local SIP media daemon so the doorphone can be used
 from a SIP client and Home Assistant.
 
+![Fermax WiBox GK7102S hardware](docs/img/wibox-hardware.webp)
+
 The firmware provides:
 
 - SIP audio calls with PCMA RTP;
 - optional H.264 D1 video from the main encoder;
-- on-demand D1 JPEG snapshots published to Home Assistant;
+- on-demand JPEG snapshots published to Home Assistant;
 - DTMF `#`, MQTT door unlock and optional Fermax F1 auxiliary relay trigger;
 - Home Assistant discovery over MQTT;
 - Prometheus metrics;
@@ -94,12 +96,25 @@ firmware_update_enabled=1
 prometheus_enabled=1
 ```
 
-Fresh installations default to `video_enabled=0`, `video_bitrate_kbps=4096`,
-`outgoing_call_timeout=60` and `ring_snapshot_delay_ms=2000`. Those keys can be
-set in the file as boot defaults, but Home Assistant controls publish retained
-MQTT overrides that take priority after startup. Video resolution is not exposed
-as a free-form setting; the proven capture mode is D1 `688x576`, and any future
-resolution control must be a closed MQTT select.
+Fresh installations default to `video_enabled=0`, `rtsp_enabled=0`,
+`video_bitrate_kbps=4096`, `outgoing_call_timeout=60` and
+`ring_snapshot_delay_ms=2000`. `video_enabled` is the global video capability
+flag for installations with a camera path; when it is off, SIP and RTSP run
+audio-only. These keys can be set in the file as boot defaults, but Home
+Assistant controls publish retained MQTT overrides that take priority after
+startup. Video resolution is not exposed as a free-form setting; the proven
+capture mode is D1 `688x576`, and any future resolution control must be a
+closed MQTT select.
+
+File recording is disabled by default; at 4096 kbps a 30 second H.264 clip is
+about 15 MiB and only fits temporarily in `/tmp`, never in persistent flash.
+Experimental RTSP can be enabled with `rtsp_enabled=1`; it exposes
+`rtsp://<wibox-ip>:8554/live`. With `video_enabled=1` it serves H.264 D1 video
+plus PCMA audio; with `video_enabled=0` it serves audio-only. Optional Basic
+auth is configured with `rtsp_auth_user` and `rtsp_auth_pass`. SIP calls attach
+to the same audio/video runtime while RTSP clients remain connected. When
+RTSP/SIP video is already active, snapshots are taken from the secondary MJPEG
+stream at `352x288` so the D1 H.264 stream can continue uninterrupted.
 
 ## Runtime Model
 

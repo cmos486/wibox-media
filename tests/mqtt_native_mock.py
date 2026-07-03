@@ -49,11 +49,11 @@ def packet(packet_type, payload=b""):
     return bytes([packet_type]) + enc_remaining(len(payload)) + payload
 
 
-def publish(topic, payload):
+def publish(topic, payload, retain=False):
     topic_b = topic.encode()
     payload_b = payload.encode()
     body = struct.pack("!H", len(topic_b)) + topic_b + payload_b
-    return packet(0x30, body)
+    return packet(0x31 if retain else 0x30, body)
 
 
 def broker(published):
@@ -91,11 +91,17 @@ def broker(published):
                     published.append((topic, body))
                     if not sent_commands and topic == "wibox/test":
                         sent_commands = True
-                        conn.sendall(publish("wibox/test/video/enabled/set", "OFF"))
-                        conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "2048"))
-                        conn.sendall(publish("wibox/test/call/timeout_seconds/set", "45"))
-                        conn.sendall(publish("wibox/test/snapshot/ring_delay_ms/set", "1500"))
-                        conn.sendall(publish("wibox/test/call_forward/enabled/set", "OFF"))
+                        conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS", retain=True))
+                        conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS", retain=True))
+                        conn.sendall(publish("wibox/test/door/open/set", "PRESS", retain=True))
+                        conn.sendall(publish("wibox/test/firmware/update/check/set", "PRESS", retain=True))
+                        conn.sendall(publish("wibox/test/firmware/update/install/set", "PRESS", retain=True))
+                        conn.sendall(publish("wibox/test/video/enabled/set", "OFF", retain=True))
+                        conn.sendall(publish("wibox/test/rtsp/enabled/set", "ON", retain=True))
+                        conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "2048", retain=True))
+                        conn.sendall(publish("wibox/test/call/timeout_seconds/set", "45", retain=True))
+                        conn.sendall(publish("wibox/test/snapshot/ring_delay_ms/set", "1500", retain=True))
+                        conn.sendall(publish("wibox/test/call_forward/enabled/set", "OFF", retain=True))
                         conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS"))
                         conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS"))
                         conn.sendall(publish("wibox/test/door/open/set", "PRESS"))
@@ -182,8 +188,8 @@ def main():
                for topic, payload in published):
         print("missing snapshot image Home Assistant discovery publish", file=sys.stderr)
         return 1
-    if ("wibox/test/snapshot/take/availability", "online") not in published:
-        print("missing snapshot initial availability publish", file=sys.stderr)
+    if ("wibox/test/snapshot/take/availability", "offline") not in published:
+        print("missing snapshot disabled availability publish", file=sys.stderr)
         return 1
     if ("wibox/test/call_forward/enabled", "ON") not in published:
         print("missing retained call forward initial state", file=sys.stderr)
@@ -200,8 +206,17 @@ def main():
                for topic, payload in published):
         print("missing ring snapshot delay Home Assistant discovery publish", file=sys.stderr)
         return 1
+    if not any(topic.endswith("_rtsp_enabled/config") for topic, _ in published):
+        print("missing RTSP enabled Home Assistant discovery publish", file=sys.stderr)
+        return 1
     if ("wibox/test/video/enabled", "OFF") not in published:
         print("missing default video disabled state publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/rtsp/enabled", "OFF") not in published:
+        print("missing default RTSP disabled state publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/rtsp/enabled", "ON") not in published:
+        print("missing retained RTSP enabled state publish", file=sys.stderr)
         return 1
     if ("wibox/test/video/bitrate_kbps", "4096") not in published:
         print("missing default video bitrate state publish", file=sys.stderr)

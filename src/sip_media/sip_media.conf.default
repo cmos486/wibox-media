@@ -13,6 +13,13 @@ video_enabled=0
 video_rtp_port=8002
 video_payload_type=96
 video_bitrate_kbps=4096
+video_recording_enabled=0
+video_recording_path=/tmp/wibox-last-call.h264
+video_recording_max_seconds=30
+rtsp_enabled=0
+rtsp_port=8554
+rtsp_auth_user=
+rtsp_auth_pass=
 
 # Snapshot Configuration
 ring_snapshot_delay_ms=2000

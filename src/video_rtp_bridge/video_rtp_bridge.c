@@ -65,6 +65,14 @@
 #define IOC_VI_SOURCE_CAPS     0x80047305
 
 #define DEVICE "/dev/gk_video"
+#define RTSP_H264_PAYLOAD_TYPE 96
+#define RTSP_IDR_INTERVAL_MS 2000
+#define SNAPSHOT_STREAM_ID 2
+#define SNAPSHOT_WIDTH 352
+#define SNAPSHOT_HEIGHT 288
+#define SNAPSHOT_FPS 5
+#define SNAPSHOT_CHANNEL_ID 2
+#define SNAPSHOT_MIN_JPEG_BYTES 4096
 
 /* ================================================================
  * struct srcbuf_format_t - 40 bytes for ioctl 0x40047687
@@ -116,6 +124,7 @@ struct h264_scan {
 
 struct rtp_sender {
     int fd;
+    int sink_fd;
     struct sockaddr_in remote;
     uint16_t seq;
     uint32_t timestamp;
@@ -236,7 +245,17 @@ static int rtp_sender_open(struct rtp_sender *rtp, const char *remote_ip,
                            int remote_port, int local_port, int payload_type)
 {
     struct sockaddr_in local;
-    memset(rtp, 0, sizeof(*rtp));
+
+    if (!rtp || !remote_ip || !remote_ip[0] ||
+        remote_port <= 0 || local_port <= 0 ||
+        payload_type <= 0 || payload_type > 127) {
+        return -1;
+    }
+    if (rtp->fd >= 0) {
+        close(rtp->fd);
+        rtp->fd = -1;
+    }
+
     rtp->fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (rtp->fd < 0) {
         perror("socket");
@@ -264,11 +283,86 @@ static int rtp_sender_open(struct rtp_sender *rtp, const char *remote_ip,
         return -1;
     }
 
+    rtp->payload_type = (uint8_t)payload_type;
+    return 0;
+}
+
+static void rtp_sender_clear_udp(struct rtp_sender *rtp)
+{
+    if (!rtp) {
+        return;
+    }
+    if (rtp->fd >= 0) {
+        close(rtp->fd);
+        rtp->fd = -1;
+    }
+    memset(&rtp->remote, 0, sizeof(rtp->remote));
+}
+
+static void rtp_sender_clear_sink(struct rtp_sender *rtp)
+{
+    if (!rtp) {
+        return;
+    }
+    rtp->sink_fd = -1;
+}
+
+static void rtp_sender_init(struct rtp_sender *rtp, int payload_type)
+{
+    memset(rtp, 0, sizeof(*rtp));
+    rtp->fd = -1;
+    rtp->sink_fd = -1;
     rtp->seq = (uint16_t)(time(NULL) & 0xffff);
     rtp->timestamp = (uint32_t)time(NULL) * 90000U;
     rtp->ssrc = 0x57425630U; /* "WBV0" */
-    rtp->payload_type = (uint8_t)payload_type;
-    return 0;
+    rtp->payload_type = (uint8_t)(payload_type > 0 && payload_type <= 127 ?
+                                  payload_type : RTSP_H264_PAYLOAD_TYPE);
+}
+
+static void rtp_sink_write_packet(int fd, const uint8_t *pkt, size_t len)
+{
+    uint8_t hdr[2];
+    uint8_t pkt_copy[1400];
+    const uint8_t *out = pkt;
+    size_t off;
+
+    if (fd < 0 || !pkt || len == 0 || len > 0xffff) {
+        return;
+    }
+    if (len <= sizeof(pkt_copy)) {
+        memcpy(pkt_copy, pkt, len);
+        pkt_copy[1] = (uint8_t)((pkt_copy[1] & 0x80) | RTSP_H264_PAYLOAD_TYPE);
+        out = pkt_copy;
+    }
+
+    hdr[0] = (uint8_t)(len >> 8);
+    hdr[1] = (uint8_t)(len);
+
+    off = 0;
+    while (off < sizeof(hdr)) {
+        ssize_t wr = write(fd, hdr + off, sizeof(hdr) - off);
+        if (wr > 0) {
+            off += (size_t)wr;
+            continue;
+        }
+        if (wr < 0 && errno == EINTR) {
+            continue;
+        }
+        return;
+    }
+
+    off = 0;
+    while (off < len) {
+        ssize_t wr = write(fd, out + off, len - off);
+        if (wr > 0) {
+            off += (size_t)wr;
+            continue;
+        }
+        if (wr < 0 && errno == EINTR) {
+            continue;
+        }
+        return;
+    }
 }
 
 static int rtp_send_packet(struct rtp_sender *rtp, const uint8_t *payload,
@@ -294,9 +388,12 @@ static int rtp_send_packet(struct rtp_sender *rtp, const uint8_t *payload,
     memcpy(pkt + 12, payload, payload_len);
 
     rtp->seq++;
-    if (sendto(rtp->fd, pkt, payload_len + 12, 0,
-               (struct sockaddr *)&rtp->remote, sizeof(rtp->remote)) < 0) {
-        return -1;
+    rtp_sink_write_packet(rtp->sink_fd, pkt, payload_len + 12);
+    if (rtp->fd >= 0) {
+        if (sendto(rtp->fd, pkt, payload_len + 12, 0,
+                   (struct sockaddr *)&rtp->remote, sizeof(rtp->remote)) < 0) {
+            return -1;
+        }
     }
     return 0;
 }
@@ -379,6 +476,165 @@ static int rtp_send_annexb(struct rtp_sender *rtp, const uint8_t *data, size_t l
         sc = next;
     }
     return sent;
+}
+
+struct worker_snapshot_state {
+    int active;
+    int mjpeg_started;
+    int quality;
+    char path[160];
+};
+
+static void set_frame_interval_stream(int stream_id);
+static void set_encode_format_stream_type(int stream_id, int channel_id,
+                                          int encode_type, uint16_t width,
+                                          uint16_t height, uint32_t fps);
+static void set_mjpeg_config_stream(GADI_SYS_HandleT handle, int stream_id,
+                                    int quality);
+
+static int start_mjpeg_snapshot_stream(GADI_SYS_HandleT venc_handle,
+                                       struct worker_snapshot_state *snapshot)
+{
+    uint32_t types[4] = {1, 1, 2, 0};
+    int ret;
+
+    if (!snapshot) {
+        return -1;
+    }
+    if (snapshot->mjpeg_started) {
+        return 0;
+    }
+
+    errno = 0;
+    ret = ioctl(gfd, IOC_SET_SRCBUF_TYPE, types);
+    printf("[SNAPSHOT_CONTROL] SET_SRCBUF_TYPE sid2=mjpeg ret=%d errno=%d\n",
+           ret, errno);
+
+    set_frame_interval_stream(SNAPSHOT_STREAM_ID);
+    set_encode_format_stream_type(SNAPSHOT_STREAM_ID, SNAPSHOT_CHANNEL_ID, 2,
+                                  SNAPSHOT_WIDTH, SNAPSHOT_HEIGHT,
+                                  SNAPSHOT_FPS);
+    set_mjpeg_config_stream(venc_handle, SNAPSHOT_STREAM_ID, snapshot->quality);
+
+    errno = 0;
+    ret = ioctl(gfd, IOC_START_ENCODE, 1U << SNAPSHOT_STREAM_ID);
+    printf("[SNAPSHOT_CONTROL] START sid2 ret=%d errno=%d\n", ret, errno);
+    if (ret == 0 || errno == EBUSY || errno == EALREADY) {
+        snapshot->mjpeg_started = 1;
+        return 0;
+    }
+    return -1;
+}
+
+static int write_snapshot_jpeg_atomic(const char *path,
+                                      const uint8_t *data,
+                                      uint32_t size)
+{
+    char tmp_path[192];
+    FILE *fp;
+
+    if (!path || !path[0] || !data || size < 4) {
+        return -1;
+    }
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    fp = fopen(tmp_path, "wb");
+    if (!fp) {
+        printf("[SNAPSHOT_CONTROL] fopen %s failed errno=%d\n", tmp_path, errno);
+        return -1;
+    }
+    if (fwrite(data, 1, size, fp) != size) {
+        printf("[SNAPSHOT_CONTROL] fwrite %s failed errno=%d\n", tmp_path, errno);
+        fclose(fp);
+        unlink(tmp_path);
+        return -1;
+    }
+    fflush(fp);
+    fclose(fp);
+    if (rename(tmp_path, path) < 0) {
+        printf("[SNAPSHOT_CONTROL] rename %s -> %s failed errno=%d\n",
+               tmp_path, path, errno);
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
+static int poll_rtp_control(int control_fd, struct rtp_sender *rtp,
+                            GADI_SYS_HandleT venc_handle,
+                            struct worker_snapshot_state *snapshot)
+{
+    char buf[256];
+    int changed = 0;
+
+    if (control_fd < 0 || !rtp) {
+        return 0;
+    }
+
+    for (;;) {
+        ssize_t rd = read(control_fd, buf, sizeof(buf) - 1);
+        if (rd > 0) {
+            char ip[64];
+            char path[160];
+            int remote_port;
+            int local_port;
+            int payload_type;
+            int quality;
+
+            buf[rd] = '\0';
+            if (sscanf(buf, "SET_RTP %63s %d %d %d",
+                       ip, &remote_port, &local_port, &payload_type) == 4) {
+                if (rtp_sender_open(rtp, ip, remote_port, local_port, payload_type) == 0) {
+                    printf("[RTP_CONTROL] attached RTP target %s:%d local=%d payload=%d\n",
+                           ip, remote_port, local_port, payload_type);
+                    changed = 1;
+                } else {
+                    printf("[RTP_CONTROL] failed to attach RTP target %s:%d local=%d payload=%d errno=%d\n",
+                           ip, remote_port, local_port, payload_type, errno);
+                }
+            } else if (strncmp(buf, "CLEAR_RTP", 9) == 0) {
+                rtp_sender_clear_udp(rtp);
+                rtp->payload_type = RTSP_H264_PAYLOAD_TYPE;
+                printf("[RTP_CONTROL] detached RTP target; RTSP sink remains active\n");
+                changed = 1;
+            } else if (strncmp(buf, "CLEAR_RTSP", 10) == 0) {
+                rtp_sender_clear_sink(rtp);
+                printf("[RTP_CONTROL] detached RTSP sink; RTP target remains active\n");
+                changed = 1;
+            } else if (sscanf(buf, "SNAPSHOT %159s %d", path, &quality) >= 1) {
+                if (!snapshot) {
+                    printf("[SNAPSHOT_CONTROL] no snapshot state available\n");
+                } else if (snapshot->active) {
+                    printf("[SNAPSHOT_CONTROL] snapshot already pending path=%s\n",
+                           snapshot->path);
+                } else {
+                    memset(snapshot->path, 0, sizeof(snapshot->path));
+                    strncpy(snapshot->path, path, sizeof(snapshot->path) - 1);
+                    snapshot->quality = quality > 0 ? quality : 90;
+                    if (snapshot->quality > 100) snapshot->quality = 100;
+                    unlink(snapshot->path);
+                    if (start_mjpeg_snapshot_stream(venc_handle, snapshot) == 0) {
+                        snapshot->active = 1;
+                        printf("[SNAPSHOT_CONTROL] armed path=%s quality=%d\n",
+                               snapshot->path, snapshot->quality);
+                    } else {
+                        printf("[SNAPSHOT_CONTROL] failed to arm path=%s\n",
+                               snapshot->path);
+                    }
+                }
+            } else {
+                printf("[RTP_CONTROL] ignored command: %s\n", buf);
+            }
+            continue;
+        }
+        if (rd < 0 && errno == EINTR) {
+            continue;
+        }
+        if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        break;
+    }
+    return changed;
 }
 
 static void nal_cache_set(struct nal_cache *cache, const uint8_t *nal, size_t nal_len)
@@ -650,9 +906,41 @@ struct video_bridge_options {
     int payload_type;
     int bitrate_kbps;
     const char *dumpfile;
+    long long dump_limit_bytes;
+    int rtp_sink_fd;
+    int rtp_control_fd;
     const char *snapshot_path;
     int jpeg_quality;
 };
+
+static void dump_annexb_frame(FILE **fout, const uint8_t *data, size_t len,
+                              long long *written, long long limit_bytes)
+{
+    size_t write_len = len;
+
+    if (!fout || !*fout || !data || len == 0) {
+        return;
+    }
+    if (limit_bytes > 0 && *written >= limit_bytes) {
+        fclose(*fout);
+        *fout = NULL;
+        printf("[DUMP] recording limit reached (%lld bytes)\n", *written);
+        return;
+    }
+    if (limit_bytes > 0 && *written + (long long)write_len > limit_bytes) {
+        write_len = (size_t)(limit_bytes - *written);
+    }
+    if (write_len > 0) {
+        fwrite(data, 1, write_len, *fout);
+        fflush(*fout);
+        *written += (long long)write_len;
+    }
+    if (limit_bytes > 0 && *written >= limit_bytes) {
+        fclose(*fout);
+        *fout = NULL;
+        printf("[DUMP] recording limit reached (%lld bytes)\n", *written);
+    }
+}
 
 static int video_bridge_run_options(const struct video_bridge_options *opt)
 {
@@ -668,8 +956,14 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     const char *snapshot_path = NULL;
     int jpeg_quality = 90;
     const char *dumpfile;
+    long long dump_limit_bytes;
+    long long dump_written = 0;
+    int rtp_sink_fd;
+    int rtp_control_fd;
     FILE *fout = NULL;
     struct rtp_sender rtp;
+    struct worker_snapshot_state worker_snapshot;
+    int udp_enabled = 0;
     GADI_ERR err;
     int ret;
     int exit_code = 0;
@@ -679,18 +973,20 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
         return 1;
     }
 
-    memset(&rtp, 0, sizeof(rtp));
-    rtp.fd = -1;
-
     snapshot_mode = opt->mode == VIDEO_BRIDGE_MODE_SNAPSHOT;
     snapshot_path = opt->snapshot_path;
     jpeg_quality = opt->jpeg_quality > 0 ? opt->jpeg_quality : 90;
-    remote_ip = snapshot_mode ? "snapshot" : opt->remote_ip;
+    remote_ip = snapshot_mode ? "snapshot" : (opt->remote_ip ? opt->remote_ip : "rtsp-only");
     remote_port = snapshot_mode ? 0 : opt->remote_port;
     local_port = snapshot_mode ? 0 : opt->local_port;
     payload_type = snapshot_mode ? 0 : opt->payload_type;
     bitrate_kbps = opt->bitrate_kbps > 0 ? opt->bitrate_kbps : 4096;
     dumpfile = snapshot_mode ? NULL : opt->dumpfile;
+    dump_limit_bytes = snapshot_mode ? 0 : opt->dump_limit_bytes;
+    rtp_sink_fd = snapshot_mode ? -1 : opt->rtp_sink_fd;
+    rtp_control_fd = snapshot_mode ? -1 : opt->rtp_control_fd;
+    rtp_sender_init(&rtp, payload_type);
+    memset(&worker_snapshot, 0, sizeof(worker_snapshot));
 
     if (snapshot_mode && (!snapshot_path || !snapshot_path[0])) {
         fprintf(stderr, "Missing snapshot output path\n");
@@ -715,6 +1011,7 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     }
     signal(SIGTERM, on_stop);
     signal(SIGINT, on_stop);
+    signal(SIGPIPE, SIG_IGN);
 
     printf("=== WiBox D1 Video RTP Bridge ===\n");
     if (snapshot_mode) {
@@ -729,14 +1026,30 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
                bitrate_kbps, main_cbr, main_min, main_max);
     }
     if (dumpfile) printf("Debug dump: %s\n", dumpfile);
+    if (rtp_sink_fd >= 0) printf("RTP sink fd: %d\n", rtp_sink_fd);
+    if (rtp_control_fd >= 0) printf("RTP control fd: %d\n", rtp_control_fd);
     printf("\n");
 
-    if (!snapshot_mode && (remote_port <= 0 || local_port <= 0 || payload_type <= 0 || payload_type > 127)) {
+    udp_enabled = !snapshot_mode && remote_port > 0;
+
+    if (!snapshot_mode &&
+        (payload_type <= 0 || payload_type > 127 ||
+         (udp_enabled && local_port <= 0) ||
+         (!udp_enabled && rtp_sink_fd < 0))) {
         fprintf(stderr, "Invalid RTP arguments\n");
         return 1;
     }
-    if (!snapshot_mode && rtp_sender_open(&rtp, remote_ip, remote_port, local_port, payload_type) < 0) {
+    if (udp_enabled && rtp_sender_open(&rtp, remote_ip, remote_port, local_port, payload_type) < 0) {
         return 1;
+    }
+    if (!snapshot_mode) {
+        rtp.sink_fd = rtp_sink_fd;
+    }
+    if (rtp_control_fd >= 0) {
+        int flags = fcntl(rtp_control_fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(rtp_control_fd, F_SETFL, flags | O_NONBLOCK);
+        }
     }
     if (snapshot_mode) {
         fout = fopen(snapshot_path, "wb");
@@ -915,6 +1228,7 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     int first_idr_logged = 0;
     long long capture_start_ms = now_ms();
     long long last_startup_idr_request_ms = 0;
+    long long last_rtsp_idr_request_ms = 0;
 
     printf("[VIDEO_STARTUP] capture_loop_start=%lldms\n",
            capture_start_ms - worker_start_ms);
@@ -924,6 +1238,10 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
         struct h264_scan scan;
         memset(&st, 0, sizeof(st));
 
+        if (poll_rtp_control(rtp_control_fd, &rtp, venc_handle, &worker_snapshot)) {
+            force_idr_stream0("rtp-control");
+        }
+
         ret = get_stream_with_timeout(venc_handle, 0xFF, &st);
         if (ret < 0) { errors++; usleep(10000); continue; }
         errors = 0;
@@ -932,6 +1250,30 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
 
         uint8_t *data = st.addr;
         uint32_t  sz  = st.size;
+
+        if (!snapshot_mode && worker_snapshot.active &&
+            st.stream_id == SNAPSHOT_STREAM_ID &&
+            sz >= 4 && data[0] == 0xff && data[1] == 0xd8) {
+            if (sz < SNAPSHOT_MIN_JPEG_BYTES) {
+                printf("[SNAPSHOT_CONTROL] skipping small sid%d jpeg %u bytes\n",
+                       SNAPSHOT_STREAM_ID, sz);
+                usleep(1000);
+                continue;
+            }
+            if (write_snapshot_jpeg_atomic(worker_snapshot.path, data, sz) == 0) {
+                printf("[SNAPSHOT_CONTROL] wrote sid%d %ux%u jpeg %u bytes to %s\n",
+                       SNAPSHOT_STREAM_ID, SNAPSHOT_WIDTH, SNAPSHOT_HEIGHT,
+                       sz, worker_snapshot.path);
+            }
+            worker_snapshot.active = 0;
+            usleep(1000);
+            continue;
+        }
+        if (!snapshot_mode && worker_snapshot.mjpeg_started &&
+            st.stream_id == SNAPSHOT_STREAM_ID) {
+            usleep(1000);
+            continue;
+        }
 
         if (snapshot_mode) {
             if (st.stream_id != 0) { usleep(1000); continue; }
@@ -999,24 +1341,39 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
             }
         }
         if (scan.has_idr || st.pic_type == GADI_VENC_IDR_FRAME) {
+            int send_parameter_sets =
+                !sent_parameter_sets_for_first_idr &&
+                ((sps_cache.data && sps_cache.len) || (pps_cache.data && pps_cache.len));
+
             if (!first_idr_logged) {
                 printf("[VIDEO_STARTUP] first_idr=%lldms sps_cached=%d pps_cached=%d\n",
                        now_ms() - worker_start_ms,
                        sps_cache.data != NULL, pps_cache.data != NULL);
                 first_idr_logged = 1;
             }
-            if (!sent_parameter_sets_for_first_idr) {
+            if (send_parameter_sets) {
                 if (sps_cache.data && sps_cache.len) {
                     rtp_send_nal(&rtp, sps_cache.data, sps_cache.len, 0);
                 }
                 if (pps_cache.data && pps_cache.len) {
                     rtp_send_nal(&rtp, pps_cache.data, pps_cache.len, 0);
                 }
-                sent_parameter_sets_for_first_idr = 1;
-                printf("[VIDEO_STARTUP] sent_cached_parameter_sets=%lldms sps_len=%zu pps_len=%zu\n",
-                       now_ms() - worker_start_ms, sps_cache.len, pps_cache.len);
+                if (!sent_parameter_sets_for_first_idr) {
+                    sent_parameter_sets_for_first_idr = 1;
+                    printf("[VIDEO_STARTUP] sent_cached_parameter_sets=%lldms sps_len=%zu pps_len=%zu\n",
+                           now_ms() - worker_start_ms, sps_cache.len, pps_cache.len);
+                }
             }
             idrs++;
+        }
+        if (rtp_sink_fd >= 0 && idrs > 0) {
+            long long now = now_ms();
+            if (last_rtsp_idr_request_ms == 0) {
+                last_rtsp_idr_request_ms = now;
+            } else if (now - last_rtsp_idr_request_ms >= RTSP_IDR_INTERVAL_MS) {
+                force_idr_stream0("rtsp-periodic");
+                last_rtsp_idr_request_ms = now;
+            }
         }
         if (st.stream_id == 0) {
             if (rtp_send_annexb(&rtp, data, sz) < 0) {
@@ -1026,10 +1383,7 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
                 first_rtp_logged = 1;
             }
             rtp.timestamp += 3600; /* 90 kHz / 25 fps */
-            if (fout) {
-                fwrite(data, 1, sz, fout);
-                fflush(fout);
-            }
+            dump_annexb_frame(&fout, data, sz, &dump_written, dump_limit_bytes);
             total_bytes += sz;
             if (scan.has_idr || scan.has_slice || nal < 0) frames++;
             if (frames % 25 == 0)
@@ -1078,6 +1432,8 @@ int main(int argc, char **argv)
     opt.payload_type = 96;
     opt.bitrate_kbps = 4096;
     opt.jpeg_quality = 90;
+    opt.rtp_sink_fd = -1;
+    opt.rtp_control_fd = -1;
 
     if (argc >= 3 && strcmp(argv[1], "--snapshot") == 0) {
         opt.mode = VIDEO_BRIDGE_MODE_SNAPSHOT;

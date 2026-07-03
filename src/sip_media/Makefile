@@ -48,7 +48,7 @@ endif
 # source files
 ################################################################################
 
-SOURCES = sip_media.c sip_calling.c intercom.c config.c mqtt.c prometheus.c audio_hw.c video_worker.c
+SOURCES = sip_media.c sip_calling.c intercom.c config.c mqtt.c prometheus.c audio_hw.c video_worker.c rtsp_stream.c
 
 ################################################################################
 # define user cc flags
@@ -129,7 +129,7 @@ endif
 OBJECTS = $(SOURCES:.c=.o)
 
 # Header dependencies
-sip_media.o: sip_media.c sip_calling.h intercom.h config.h mqtt.h prometheus.h audio_hw.h
+sip_media.o: sip_media.c sip_calling.h intercom.h config.h mqtt.h prometheus.h audio_hw.h rtsp_stream.h
 sip_calling.o: sip_calling.c sip_calling.h
 intercom.o: intercom.c intercom.h
 config.o: config.c config.h
@@ -137,6 +137,7 @@ audio_hw.o: audio_hw.c audio_hw.h ../audio_bridge/ap.c
 mqtt.o: mqtt.c mqtt.h config.h
 prometheus.o: prometheus.c prometheus.h mqtt.h
 video_worker.o: video_worker.c video_worker.h ../video_rtp_bridge/video_rtp_bridge.c
+rtsp_stream.o: rtsp_stream.c rtsp_stream.h
 
 ################################################################################
 # Build rules

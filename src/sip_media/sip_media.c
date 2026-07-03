@@ -26,6 +26,7 @@
 #include "prometheus.h"      // Prometheus metrics exporter
 #include "audio_hw.h"        // Direct GADI audio hardware access
 #include "video_worker.h"    // In-daemon D1 H.264 RTP worker
+#include "rtsp_stream.h"     // Optional RTSP camera stream
 
 #define THIS_FILE "wibox-media-daemon"
 #define CONFIG_FILE "/mnt/mtd/sip_media.conf"
@@ -57,22 +58,39 @@ static pj_bool_t quit_flag = PJ_FALSE; // Application shutdown flag
 static int rtp_socket = -1;           // UDP socket for audio (RTP)
 static pj_thread_t *audio_input_thread;   // Thread handle for AI -> RTP
 static pj_thread_t *audio_output_thread;  // Thread handle for RTP -> AO
+static pthread_mutex_t audio_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t audio_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t video_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int audio_engine_running = 0;
+static int audio_sip_rtp_active = 0;
 static pid_t video_bridge_pid = -1;
+static int video_bridge_has_sip_rtp = 0;
+static int video_bridge_control_fd = -1;
 static pj_bool_t call_active = PJ_FALSE; // Is there an active audio session?
 static pj_mutex_t *call_active_mutex; // Mutex to protect call_active
 static struct sockaddr_in remote_rtp_addr; // Where to send audio packets
 static int current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int snapshot_active = 0;
+static char local_ip_addr[64] = "0.0.0.0";
 
 typedef struct {
     int open_panel_context;
     unsigned int delay_ms;
     const char* reason;
+    int start_rtsp_after;
 } snapshot_request_t;
 
 // Configuration
 static wibox_config_t app_config;
+
+typedef struct {
+    pj_thread_desc desc;
+    pj_thread_t *thread;
+} pj_external_thread_t;
+
+static pthread_key_t pj_external_thread_key;
+static pthread_once_t pj_external_thread_key_once = PTHREAD_ONCE_INIT;
 
 // DING monitoring
 static int ding_pipe_fd = -1;
@@ -97,6 +115,13 @@ static void* audio_handler(void* arg);
 static int setup_rtp_socket(void);
 static void start_audio_session(const char* remote_ip, int remote_port);
 static void stop_audio_session(void);
+static int ensure_audio_engine_running(const char* reason);
+static void maybe_stop_audio_engine(const char* reason);
+static void stop_audio_engine(const char* reason);
+static int get_audio_engine_running(void);
+static int get_audio_sip_rtp_active(void);
+static int get_audio_sip_target(struct sockaddr_in *target);
+static void clear_audio_sip_target(void);
 static void generate_error_audio(unsigned char* buffer, int size);
 static void* ding_monitor_thread_func(void* arg);
 static int start_ding_monitoring(void);
@@ -126,19 +151,35 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
 static void on_audio_ready(const char* remote_ip, int remote_rtp_port,
                            int remote_video_rtp_port, void* user_data);
 static void start_video_session(const char* remote_ip, int remote_video_port);
+static int start_rtsp_preview_session(const char* reason);
+static int start_video_worker(const char* remote_ip, int remote_video_port,
+                              int payload_type, const char* reason);
+static int attach_video_worker_rtp(const char* remote_ip, int remote_video_port,
+                                   int payload_type);
+static int clear_video_worker_rtp(void);
+static int clear_video_worker_rtsp(void);
+static void release_sip_video_or_stop(const char* reason);
+static void close_video_control_fd(void);
 static void stop_video_session(void);
+static int start_rtsp_service(void);
+static void stop_rtsp_service(void);
+static void on_rtsp_client_count_change(int video_clients, int audio_clients, void* user_data);
+static int ensure_pj_thread_registered(const char *name);
 static void unlock_door(const char* source);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
 static void mqtt_take_snapshot_callback(void* user_data);
 static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
-                                  const char* reason);
+                                  const char* reason, int start_rtsp_after);
 static void* snapshot_thread_func(void* arg);
+static void publish_snapshot_button_availability(void);
+static int clamp_recording_max_seconds(int seconds);
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data);
 static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data);
 static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
+static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data);
 static int clamp_ring_snapshot_delay(int delay_ms);
 
 // Module to handle incoming requests and responses
@@ -171,6 +212,49 @@ static void set_call_active_status(pj_bool_t active) {
     pj_mutex_lock(call_active_mutex);
     call_active = active;
     pj_mutex_unlock(call_active_mutex);
+}
+
+static void set_audio_engine_running(int running) {
+    pthread_mutex_lock(&audio_state_mutex);
+    audio_engine_running = running ? 1 : 0;
+    pthread_mutex_unlock(&audio_state_mutex);
+}
+
+static int get_audio_engine_running(void) {
+    int running;
+
+    pthread_mutex_lock(&audio_state_mutex);
+    running = audio_engine_running;
+    pthread_mutex_unlock(&audio_state_mutex);
+    return running;
+}
+
+static int get_audio_sip_rtp_active(void) {
+    int active;
+
+    pthread_mutex_lock(&audio_state_mutex);
+    active = audio_sip_rtp_active;
+    pthread_mutex_unlock(&audio_state_mutex);
+    return active;
+}
+
+static int get_audio_sip_target(struct sockaddr_in *target) {
+    int active;
+
+    pthread_mutex_lock(&audio_state_mutex);
+    active = audio_sip_rtp_active;
+    if (active && target) {
+        *target = remote_rtp_addr;
+    }
+    pthread_mutex_unlock(&audio_state_mutex);
+    return active;
+}
+
+static void clear_audio_sip_target(void) {
+    pthread_mutex_lock(&audio_state_mutex);
+    audio_sip_rtp_active = 0;
+    memset(&remote_rtp_addr, 0, sizeof(remote_rtp_addr));
+    pthread_mutex_unlock(&audio_state_mutex);
 }
 
 static int get_interface_ip(const char* ifname, char* ip_str, size_t len) {
@@ -365,8 +449,10 @@ static int ensure_rtp_socket_ready(void) {
 
 // Send NAT keep-alive packet during active calls to maintain NAT bindings
 static void send_nat_keepalive(void) {
-    if (rtp_socket < 0 || !get_call_active_status()) {
-        return;  // Only during active calls
+    struct sockaddr_in target;
+
+    if (rtp_socket < 0 || !get_audio_sip_target(&target)) {
+        return;  // Only while a SIP RTP target is attached.
     }
 
     // Send minimal RTP packet to maintain NAT binding
@@ -378,7 +464,7 @@ static void send_nat_keepalive(void) {
     };
 
     ssize_t result = sendto(rtp_socket, keepalive_packet, sizeof(keepalive_packet), MSG_DONTWAIT,
-                           (struct sockaddr*)&remote_rtp_addr, sizeof(remote_rtp_addr));
+                           (struct sockaddr*)&target, sizeof(target));
 
     if (result < 0) {
         PJ_LOG(4,(THIS_FILE, "NAT keep-alive failed: %s", strerror(errno)));
@@ -529,6 +615,7 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
     if (new_state == SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_ESTABLISHED) {
         PJ_LOG(3,(THIS_FILE, "Call established - sending START_CALL to intercom"));
         intercom_send_command(INTERCOM_CMD_START_CALL);
+        set_call_active_status(PJ_TRUE);
         mqtt_publish_call_active(1);
         mqtt_publish_sip_call_active(1);
         mqtt_publish_ringing(0);
@@ -544,16 +631,15 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         (new_state == SIP_CALL_STATE_IDLE || new_state == SIP_CALL_STATE_FAILED)) {
         PJ_LOG(3,(THIS_FILE, "Established call terminated - sending STOP_CALL to intercom"));
         intercom_send_command(INTERCOM_CMD_STOP_CALL);
-        stop_video_session();
+        release_sip_video_or_stop("established-call-ended");
         stop_audio_session();
+        set_call_active_status(PJ_FALSE);
         mqtt_publish_call_active(0);
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
-        mqtt_publish_video_active(0);
         mqtt_publish_media_state("idle");
         prometheus_set_call_active(0);
         prometheus_set_sip_call_active(0);
-        prometheus_set_video_active(0);
         prometheus_set_ringing(0);
     }
 
@@ -561,16 +647,15 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
     if (old_state != SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_IDLE &&
         (new_state == SIP_CALL_STATE_IDLE || new_state == SIP_CALL_STATE_FAILED)) {
         PJ_LOG(3,(THIS_FILE, "Non-established call terminated - no intercom command needed"));
-        stop_video_session();
+        release_sip_video_or_stop("non-established-call-ended");
         stop_audio_session();
+        set_call_active_status(PJ_FALSE);
         mqtt_publish_call_active(0);
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
-        mqtt_publish_video_active(0);
         mqtt_publish_media_state("idle");
         prometheus_set_call_active(0);
         prometheus_set_sip_call_active(0);
-        prometheus_set_video_active(0);
         prometheus_set_ringing(0);
     }
 }
@@ -580,8 +665,8 @@ static void on_audio_ready(const char* remote_ip, int remote_rtp_port,
     PJ_LOG(3,(THIS_FILE, "Media ready: audio=%s:%d video=%s:%d",
               remote_ip, remote_rtp_port, remote_ip, remote_video_rtp_port));
 
-    // Don't start if already active
-    if (get_call_active_status()) {
+    // Don't attach duplicate RTP targets for the same SIP media session.
+    if (get_audio_sip_rtp_active()) {
         PJ_LOG(3,(THIS_FILE, "Audio session already active - ignoring duplicate"));
         return;
     }
@@ -590,9 +675,107 @@ static void on_audio_ready(const char* remote_ip, int remote_rtp_port,
     start_video_session(remote_ip, remote_video_rtp_port);
 }
 
+static void close_video_control_fd(void) {
+    if (video_bridge_control_fd >= 0) {
+        close(video_bridge_control_fd);
+        video_bridge_control_fd = -1;
+    }
+}
+
+static int write_video_control_command(const char* command, size_t len) {
+    size_t off = 0;
+
+    if (video_bridge_control_fd < 0 || !command || len == 0) {
+        return -1;
+    }
+
+    while (off < len) {
+        ssize_t wr = write(video_bridge_control_fd, command + off, len - off);
+        if (wr > 0) {
+            off += (size_t)wr;
+            continue;
+        }
+        if (wr < 0 && errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int attach_video_worker_rtp(const char* remote_ip, int remote_video_port,
+                                   int payload_type) {
+    char command[160];
+    size_t len;
+
+    if (video_bridge_control_fd < 0 || !remote_ip || !remote_ip[0] ||
+        remote_video_port <= 0 || payload_type <= 0 || payload_type > 127) {
+        return -1;
+    }
+
+    len = (size_t)snprintf(command, sizeof(command), "SET_RTP %s %d %d %d\n",
+                           remote_ip, remote_video_port,
+                           app_config.video_rtp_port, payload_type);
+    if (len == 0 || len >= sizeof(command)) {
+        return -1;
+    }
+
+    return write_video_control_command(command, len);
+}
+
+static int request_video_worker_snapshot(const char* path, int quality) {
+    char command[220];
+    size_t len;
+
+    if (video_bridge_pid <= 0 || video_bridge_control_fd < 0 ||
+        !path || !path[0]) {
+        return -1;
+    }
+
+    len = (size_t)snprintf(command, sizeof(command), "SNAPSHOT %s %d\n",
+                           path, quality > 0 ? quality : 90);
+    if (len == 0 || len >= sizeof(command)) {
+        return -1;
+    }
+    return write_video_control_command(command, len);
+}
+
+static int wait_for_snapshot_file(const char* path, int timeout_ms) {
+    int waited = 0;
+
+    while (waited < timeout_ms) {
+        struct stat st;
+        if (stat(path, &st) == 0 && st.st_size > 0) {
+            return 0;
+        }
+        usleep(50000);
+        waited += 50;
+    }
+    return -1;
+}
+
+static int clear_video_worker_rtp(void) {
+    const char command[] = "CLEAR_RTP\n";
+
+    if (video_bridge_pid <= 0 || video_bridge_control_fd < 0) {
+        return -1;
+    }
+    return write_video_control_command(command, sizeof(command) - 1);
+}
+
+static int clear_video_worker_rtsp(void) {
+    const char command[] = "CLEAR_RTSP\n";
+
+    if (video_bridge_pid <= 0 || video_bridge_control_fd < 0) {
+        return -1;
+    }
+    return write_video_control_command(command, sizeof(command) - 1);
+}
+
 static void start_video_session(const char* remote_ip, int remote_video_port) {
     const sip_call_session_t *session;
     int payload_type;
+    int wait_count;
 
     if (!app_config.video_enabled) {
         PJ_LOG(3,(THIS_FILE, "Video disabled by configuration"));
@@ -602,9 +785,19 @@ static void start_video_session(const char* remote_ip, int remote_video_port) {
         PJ_LOG(3,(THIS_FILE, "Remote SDP has no video port; not starting video"));
         return;
     }
-    if (video_bridge_pid > 0) {
-        PJ_LOG(3,(THIS_FILE, "Video worker already running pid=%d", video_bridge_pid));
-        return;
+
+    for (wait_count = 0; wait_count < 30; wait_count++) {
+        int active;
+        pthread_mutex_lock(&snapshot_mutex);
+        active = snapshot_active;
+        pthread_mutex_unlock(&snapshot_mutex);
+        if (!active) {
+            break;
+        }
+        if (wait_count == 0) {
+            PJ_LOG(3,(THIS_FILE, "Video start waiting for snapshot capture to finish"));
+        }
+        usleep(100000);
     }
 
     session = sip_calling_get_session();
@@ -613,59 +806,299 @@ static void start_video_session(const char* remote_ip, int remote_video_port) {
         payload_type = session->remote_video_payload_type;
     }
 
+    if (video_bridge_pid > 0) {
+        if (attach_video_worker_rtp(remote_ip, remote_video_port, payload_type) == 0) {
+            PJ_LOG(3,(THIS_FILE, "Attached SIP RTP target %s:%d payload=%d to video worker pid=%d",
+                      remote_ip, remote_video_port, payload_type, video_bridge_pid));
+            video_bridge_has_sip_rtp = 1;
+            return;
+        }
+        PJ_LOG(2,(THIS_FILE, "Failed to attach SIP RTP target to video worker; restarting video worker"));
+        stop_video_session();
+    }
+
+    start_video_worker(remote_ip, remote_video_port, payload_type, "sip");
+}
+
+static int start_video_worker(const char* remote_ip, int remote_video_port,
+                              int payload_type, const char* reason) {
+    const char *dumpfile = NULL;
+    long long dump_limit_bytes = 0;
+    int rtsp_video_fd;
+    int recording_seconds;
+    int control_pipe[2] = {-1, -1};
+    int has_sip_rtp = remote_ip && remote_ip[0] && remote_video_port > 0;
+
+    if (!app_config.video_enabled) {
+        PJ_LOG(3,(THIS_FILE, "Video worker not started: video disabled"));
+        return 0;
+    }
+    if (video_bridge_pid > 0) {
+        PJ_LOG(3,(THIS_FILE, "Video worker already running pid=%d", video_bridge_pid));
+        return 1;
+    }
+    if (payload_type <= 0 || payload_type > 127) {
+        payload_type = app_config.video_payload_type;
+    }
+
+    if (has_sip_rtp &&
+        app_config.video_recording_enabled && app_config.video_recording_path[0]) {
+        recording_seconds = clamp_recording_max_seconds(app_config.video_recording_max_seconds);
+        dumpfile = app_config.video_recording_path;
+        dump_limit_bytes = ((long long)app_config.video_bitrate_kbps * 1024LL / 8LL) *
+                           (long long)recording_seconds;
+        PJ_LOG(3,(THIS_FILE, "Video recording enabled path=%s limit=%lld bytes (%ds)",
+                  dumpfile, dump_limit_bytes, recording_seconds));
+    }
+
+    rtsp_video_fd = rtsp_stream_get_video_pipe_fd();
+    if (!has_sip_rtp && rtsp_video_fd < 0) {
+        PJ_LOG(2,(THIS_FILE, "Video worker not started: no SIP target and RTSP pipe unavailable"));
+        return 0;
+    }
+    if (pipe(control_pipe) < 0) {
+        PJ_LOG(1,(THIS_FILE, "Video worker not started: control pipe failed: %s",
+                  strerror(errno)));
+        return 0;
+    }
+    close_video_control_fd();
+
     video_bridge_pid = fork();
     if (video_bridge_pid < 0) {
         PJ_LOG(1,(THIS_FILE, "Failed to fork video worker: %s", strerror(errno)));
+        close(control_pipe[0]);
+        close(control_pipe[1]);
         video_bridge_pid = -1;
-        return;
+        return 0;
     }
     if (video_bridge_pid == 0) {
         int log_fd = open("/tmp/wibox-video-worker.log",
                           O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int fd;
+        long max_fd;
+        close(control_pipe[1]);
         if (log_fd >= 0) {
             dup2(log_fd, STDOUT_FILENO);
             dup2(log_fd, STDERR_FILENO);
             close(log_fd);
         }
-        _exit(video_worker_run(remote_ip, remote_video_port,
-                               app_config.video_rtp_port, payload_type,
-                               app_config.video_bitrate_kbps, NULL));
+        max_fd = sysconf(_SC_OPEN_MAX);
+        if (max_fd < 0 || max_fd > 256) {
+            max_fd = 256;
+        }
+        for (fd = 3; fd < max_fd; fd++) {
+            if (fd == rtsp_video_fd || fd == control_pipe[0]) {
+                continue;
+            }
+            close(fd);
+        }
+        _exit(video_worker_run(has_sip_rtp ? remote_ip : NULL,
+                               has_sip_rtp ? remote_video_port : 0,
+                               has_sip_rtp ? app_config.video_rtp_port : 0,
+                               payload_type,
+                               app_config.video_bitrate_kbps,
+                               dumpfile, dump_limit_bytes,
+                               rtsp_video_fd, control_pipe[0]));
     }
 
-    PJ_LOG(3,(THIS_FILE, "Started in-daemon video worker pid=%d to %s:%d payload=%d bitrate=%dkbps",
-              video_bridge_pid, remote_ip, remote_video_port, payload_type,
-              app_config.video_bitrate_kbps));
+    close(control_pipe[0]);
+    video_bridge_control_fd = control_pipe[1];
+    video_bridge_has_sip_rtp = has_sip_rtp ? 1 : 0;
+    PJ_LOG(3,(THIS_FILE, "Started video worker pid=%d reason=%s sip_rtp=%d target=%s:%d payload=%d bitrate=%dkbps rtsp_fd=%d",
+              video_bridge_pid, reason ? reason : "unknown", video_bridge_has_sip_rtp,
+              has_sip_rtp ? remote_ip : "-", has_sip_rtp ? remote_video_port : 0,
+              payload_type, app_config.video_bitrate_kbps, rtsp_video_fd));
     mqtt_publish_video_active(1);
     prometheus_set_video_active(1);
     prometheus_inc_video_started();
+    return 1;
+}
+
+static int start_rtsp_preview_session(const char* reason) {
+    if (!app_config.video_enabled) {
+        PJ_LOG(3,(THIS_FILE, "RTSP preview not started: video disabled"));
+        return 0;
+    }
+    if (!app_config.rtsp_enabled) {
+        PJ_LOG(3,(THIS_FILE, "RTSP preview not started: RTSP disabled"));
+        return 0;
+    }
+    return start_video_worker(NULL, 0, app_config.video_payload_type,
+                              reason ? reason : "rtsp");
+}
+
+static void release_sip_video_or_stop(const char* reason) {
+    if (video_bridge_pid <= 0) {
+        return;
+    }
+
+    if (app_config.rtsp_enabled && app_config.video_enabled &&
+        rtsp_stream_get_video_client_count() > 0) {
+        if (video_bridge_has_sip_rtp) {
+            if (clear_video_worker_rtp() == 0) {
+                PJ_LOG(3,(THIS_FILE, "Detached SIP RTP from video worker pid=%d; keeping RTSP alive (%s)",
+                          video_bridge_pid, reason ? reason : "unknown"));
+            } else {
+                PJ_LOG(2,(THIS_FILE, "Failed to detach SIP RTP from video worker pid=%d; keeping RTSP alive anyway",
+                          video_bridge_pid));
+            }
+        }
+        video_bridge_has_sip_rtp = 0;
+        mqtt_publish_video_active(1);
+        prometheus_set_video_active(1);
+        return;
+    }
+
+    stop_video_session();
 }
 
 static void stop_video_session(void) {
     int status;
     int i;
+    pid_t pid;
 
+    pthread_mutex_lock(&video_lifecycle_mutex);
     if (video_bridge_pid <= 0) {
+        pthread_mutex_unlock(&video_lifecycle_mutex);
         return;
     }
 
-    PJ_LOG(3,(THIS_FILE, "Stopping video worker pid=%d", video_bridge_pid));
-    kill(video_bridge_pid, SIGTERM);
+    pid = video_bridge_pid;
+    PJ_LOG(3,(THIS_FILE, "Stopping video worker pid=%d", pid));
+    close_video_control_fd();
+    kill(pid, SIGTERM);
     for (i = 0; i < 20; i++) {
-        pid_t r = waitpid(video_bridge_pid, &status, WNOHANG);
-        if (r == video_bridge_pid) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
             video_bridge_pid = -1;
+            video_bridge_has_sip_rtp = 0;
             mqtt_publish_video_active(0);
             prometheus_set_video_active(0);
+            pthread_mutex_unlock(&video_lifecycle_mutex);
             return;
         }
         usleep(100000);
     }
 
-    kill(video_bridge_pid, SIGKILL);
-    waitpid(video_bridge_pid, &status, 0);
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
     video_bridge_pid = -1;
+    video_bridge_has_sip_rtp = 0;
     mqtt_publish_video_active(0);
     prometheus_set_video_active(0);
+    pthread_mutex_unlock(&video_lifecycle_mutex);
+}
+
+static int start_rtsp_service(void) {
+    if (!app_config.rtsp_enabled) {
+        return 0;
+    }
+    if (rtsp_stream_start(app_config.rtsp_port, local_ip_addr,
+                          app_config.video_enabled,
+                          app_config.rtsp_auth_user,
+                          app_config.rtsp_auth_pass) < 0) {
+        printf("Warning: Failed to start RTSP stream\n");
+        return -1;
+    }
+    rtsp_stream_set_client_callback(on_rtsp_client_count_change, NULL);
+    return 0;
+}
+
+static void stop_rtsp_service(void) {
+    if (video_bridge_pid > 0 && video_bridge_has_sip_rtp) {
+        clear_video_worker_rtsp();
+    }
+    rtsp_stream_stop();
+    if (video_bridge_pid > 0 && !video_bridge_has_sip_rtp) {
+        stop_video_session();
+    }
+    maybe_stop_audio_engine("rtsp-disabled");
+}
+
+static void pj_external_thread_key_init(void) {
+    pthread_key_create(&pj_external_thread_key, free);
+}
+
+static int ensure_pj_thread_registered(const char *name) {
+    pj_external_thread_t *external_thread;
+    pj_status_t status;
+
+    if (!pool) {
+        printf("%s callback ignored until PJLIB is ready\n",
+               name ? name : "external");
+        return 0;
+    }
+    if (pj_thread_is_registered()) {
+        return 1;
+    }
+
+    pthread_once(&pj_external_thread_key_once, pj_external_thread_key_init);
+    external_thread = pthread_getspecific(pj_external_thread_key);
+    if (!external_thread) {
+        external_thread = calloc(1, sizeof(*external_thread));
+        if (!external_thread) {
+            printf("Failed to allocate PJLIB thread registration for %s\n",
+                   name ? name : "external");
+            return 0;
+        }
+        status = pj_thread_register(name ? name : "external",
+                                    external_thread->desc,
+                                    &external_thread->thread);
+        if (status != PJ_SUCCESS) {
+            printf("Failed to register %s thread with PJLIB: %d\n",
+                   name ? name : "external", status);
+            free(external_thread);
+            return 0;
+        }
+        pthread_setspecific(pj_external_thread_key, external_thread);
+    }
+
+    return 1;
+}
+
+static void on_rtsp_client_count_change(int video_clients, int audio_clients, void* user_data) {
+    int should_start_preview;
+    int should_stop_preview;
+    int should_start_audio;
+    int should_maybe_stop_audio;
+
+    (void)user_data;
+
+    printf("rtsp: active clients video=%d audio=%d\n", video_clients, audio_clients);
+    pthread_mutex_lock(&snapshot_mutex);
+    should_start_preview = app_config.rtsp_enabled && app_config.video_enabled &&
+                           video_clients > 0 && video_bridge_pid <= 0;
+    pthread_mutex_unlock(&snapshot_mutex);
+    should_stop_preview = (!app_config.rtsp_enabled || !app_config.video_enabled ||
+                          video_clients == 0) && video_bridge_pid > 0 &&
+                          !video_bridge_has_sip_rtp &&
+                          !sip_calling_is_call_active();
+    should_start_audio = audio_clients > 0 && !get_audio_engine_running();
+    should_maybe_stop_audio = audio_clients == 0;
+    if (!should_start_preview && !should_stop_preview &&
+        !should_start_audio && !should_maybe_stop_audio) {
+        return;
+    }
+
+    if (!ensure_pj_thread_registered("rtsp_callback")) {
+        return;
+    }
+
+    if (should_start_audio) {
+        ensure_audio_engine_running("rtsp-client");
+    }
+
+    if (should_start_preview) {
+        start_rtsp_preview_session("rtsp-client");
+    }
+
+    if (should_stop_preview) {
+        stop_video_session();
+    }
+
+    if (should_maybe_stop_audio) {
+        maybe_stop_audio_engine("rtsp-client");
+    }
 }
 
 static void unlock_door(const char* source) {
@@ -690,12 +1123,14 @@ static void mqtt_open_door_callback(void* user_data) {
 
     printf("MQTT open door requested without active call; starting panel context\n");
     intercom_send_command(INTERCOM_CMD_START_CALL);
+    set_call_active_status(PJ_TRUE);
     mqtt_publish_call_active(1);
     prometheus_set_call_active(1);
     usleep(500000);
     unlock_door("mqtt");
     usleep(1000000);
     intercom_send_command(INTERCOM_CMD_STOP_CALL);
+    set_call_active_status(PJ_FALSE);
     mqtt_publish_call_active(0);
     prometheus_set_call_active(0);
 }
@@ -715,13 +1150,30 @@ static void mqtt_trigger_f1_callback(void* user_data) {
 
 static void mqtt_take_snapshot_callback(void* user_data) {
     (void)user_data;
-    start_snapshot_capture(1, 0, "manual");
+    start_snapshot_capture(1, 0, "manual", 0);
+}
+
+static void publish_snapshot_button_availability(void) {
+    int busy;
+
+    pthread_mutex_lock(&snapshot_mutex);
+    busy = snapshot_active;
+    pthread_mutex_unlock(&snapshot_mutex);
+
+    mqtt_publish_snapshot_available(app_config.video_enabled && !busy);
 }
 
 static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
-                                  const char* reason) {
+                                  const char* reason, int start_rtsp_after) {
     pthread_t thread;
     snapshot_request_t* request;
+
+    if (!app_config.video_enabled) {
+        printf("Snapshot ignored for %s - video disabled\n",
+               reason ? reason : "unknown");
+        mqtt_publish_snapshot_available(0);
+        return -1;
+    }
 
     pthread_mutex_lock(&snapshot_mutex);
     if (snapshot_active) {
@@ -740,19 +1192,20 @@ static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
         pthread_mutex_lock(&snapshot_mutex);
         snapshot_active = 0;
         pthread_mutex_unlock(&snapshot_mutex);
-        mqtt_publish_snapshot_available(1);
+        publish_snapshot_button_availability();
         printf("Failed to allocate snapshot request\n");
         return -1;
     }
     request->open_panel_context = open_panel_context ? 1 : 0;
     request->delay_ms = delay_ms;
     request->reason = reason ? reason : "unknown";
+    request->start_rtsp_after = start_rtsp_after ? 1 : 0;
 
     if (pthread_create(&thread, NULL, snapshot_thread_func, request) != 0) {
         pthread_mutex_lock(&snapshot_mutex);
         snapshot_active = 0;
         pthread_mutex_unlock(&snapshot_mutex);
-        mqtt_publish_snapshot_available(1);
+        publish_snapshot_button_availability();
         free(request);
         printf("Failed to create snapshot thread\n");
         return -1;
@@ -767,13 +1220,14 @@ static void* snapshot_thread_func(void* arg) {
     int status = 1;
     pid_t pid;
     int child_status = 0;
-    pj_thread_desc desc;
+    pj_thread_desc desc = {0};
     pj_thread_t *thread;
     pj_status_t pj_status;
 
     request.open_panel_context = 1;
     request.delay_ms = 0;
     request.reason = "manual";
+    request.start_rtsp_after = 0;
     if (arg) {
         request = *(snapshot_request_t*)arg;
         free(arg);
@@ -793,15 +1247,11 @@ static void* snapshot_thread_func(void* arg) {
 
     unlink(SNAPSHOT_PATH);
 
-    if (video_bridge_pid > 0) {
-        printf("Snapshot ignored - video worker already running pid=%d\n", video_bridge_pid);
-        goto done;
-    }
-
     if (!get_call_active_status()) {
         if (request.open_panel_context) {
             printf("Snapshot starting temporary panel context\n");
             intercom_send_command(INTERCOM_CMD_START_CALL);
+            set_call_active_status(PJ_TRUE);
             mqtt_publish_call_active(1);
             prometheus_set_call_active(1);
             usleep(500000);
@@ -810,6 +1260,25 @@ static void* snapshot_thread_func(void* arg) {
             printf("Snapshot %s capturing without temporary panel context\n",
                    request.reason ? request.reason : "unknown");
         }
+    }
+
+    if (video_bridge_pid <= 0 && app_config.video_enabled &&
+        app_config.rtsp_enabled && rtsp_stream_get_video_client_count() > 0) {
+        start_rtsp_preview_session("snapshot");
+        usleep(300000);
+    }
+
+    if (video_bridge_pid > 0) {
+        printf("Snapshot requesting active video worker pid=%d\n", video_bridge_pid);
+        if (request_video_worker_snapshot(SNAPSHOT_PATH, 90) == 0 &&
+            wait_for_snapshot_file(SNAPSHOT_PATH, 5000) == 0) {
+            if (mqtt_publish_snapshot_file(SNAPSHOT_PATH) == 0) {
+                status = 0;
+            }
+        } else {
+            printf("Snapshot worker-control request failed or timed out\n");
+        }
+        goto stop_context;
     }
 
     pid = fork();
@@ -840,6 +1309,7 @@ static void* snapshot_thread_func(void* arg) {
 stop_context:
     if (started_panel_context) {
         intercom_send_command(INTERCOM_CMD_STOP_CALL);
+        set_call_active_status(PJ_FALSE);
         mqtt_publish_call_active(0);
         prometheus_set_call_active(0);
     }
@@ -848,19 +1318,40 @@ done:
     pthread_mutex_lock(&snapshot_mutex);
     snapshot_active = 0;
     pthread_mutex_unlock(&snapshot_mutex);
-    mqtt_publish_snapshot_available(1);
+    publish_snapshot_button_availability();
+    if (request.start_rtsp_after && app_config.rtsp_enabled && app_config.video_enabled &&
+        rtsp_stream_get_video_client_count() > 0 && video_bridge_pid <= 0) {
+        start_rtsp_preview_session("ring-after-snapshot");
+    }
     printf("Snapshot complete status=%d\n", status);
     return NULL;
 }
 
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data) {
     (void)user_data;
+
+    if (!ensure_pj_thread_registered("mqtt_callback")) {
+        return;
+    }
+
     app_config.video_enabled = enabled ? 1 : 0;
     printf("MQTT video_enabled set to %d\n", app_config.video_enabled);
     sip_calling_set_video_config(app_config.video_enabled ? app_config.video_rtp_port : 0,
                                  app_config.video_payload_type);
     mqtt_publish_video_enabled(app_config.video_enabled);
     prometheus_set_video_enabled(app_config.video_enabled);
+    publish_snapshot_button_availability();
+    rtsp_stream_set_video_enabled(app_config.video_enabled);
+    if (!app_config.video_enabled) {
+        stop_video_session();
+        maybe_stop_audio_engine("video-disabled");
+        return;
+    }
+    if (app_config.rtsp_enabled &&
+        rtsp_stream_get_video_client_count() > 0 && video_bridge_pid <= 0) {
+        ensure_audio_engine_running("rtsp-client-video-enabled");
+        start_rtsp_preview_session("rtsp-client-video-enabled");
+    }
 }
 
 static int clamp_video_bitrate(int bitrate_kbps) {
@@ -894,6 +1385,12 @@ static int clamp_ring_snapshot_delay(int delay_ms) {
     return rounded;
 }
 
+static int clamp_recording_max_seconds(int seconds) {
+    if (seconds <= 0) return 30;
+    if (seconds > 30) return 30;
+    return seconds;
+}
+
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data) {
     (void)user_data;
     app_config.video_bitrate_kbps = clamp_video_bitrate(bitrate_kbps);
@@ -903,6 +1400,11 @@ static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data) {
 
 static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data) {
     (void)user_data;
+
+    if (!ensure_pj_thread_registered("mqtt_callback")) {
+        return;
+    }
+
     app_config.outgoing_call_timeout = clamp_outgoing_call_timeout(timeout_seconds);
     printf("MQTT outgoing_call_timeout set to %d\n", app_config.outgoing_call_timeout);
     sip_calling_set_call_timeout(app_config.outgoing_call_timeout);
@@ -928,6 +1430,25 @@ static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data)
     }
 }
 
+static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data) {
+    (void)user_data;
+
+    if (!ensure_pj_thread_registered("mqtt_callback")) {
+        return;
+    }
+
+    app_config.rtsp_enabled = enabled ? 1 : 0;
+    printf("MQTT rtsp_enabled set to %d\n", app_config.rtsp_enabled);
+    mqtt_publish_rtsp_enabled(app_config.rtsp_enabled);
+
+    if (app_config.rtsp_enabled) {
+        start_rtsp_service();
+        return;
+    }
+
+    stop_rtsp_service();
+}
+
 static void handle_audio_test_control(const char* message) {
     char ip[64];
     int port;
@@ -939,19 +1460,21 @@ static void handle_audio_test_control(const char* message) {
         return;
     }
 
-    if (get_call_active_status()) {
-        PJ_LOG(2,(THIS_FILE, "AUDIO_TEST ignored - audio session already active"));
+    if (get_audio_sip_rtp_active()) {
+        PJ_LOG(2,(THIS_FILE, "AUDIO_TEST ignored - SIP audio target already active"));
         return;
     }
 
     PJ_LOG(3,(THIS_FILE, "AUDIO_TEST starting to %s:%d for %d seconds",
               ip, port, seconds));
     intercom_send_command(INTERCOM_CMD_START_CALL);
+    set_call_active_status(PJ_TRUE);
     usleep(500000);
     start_audio_session(ip, port);
     sleep((unsigned)seconds);
     stop_audio_session();
     intercom_send_command(INTERCOM_CMD_STOP_CALL);
+    set_call_active_status(PJ_FALSE);
     PJ_LOG(3,(THIS_FILE, "AUDIO_TEST complete"));
 }
 
@@ -998,7 +1521,7 @@ static void handle_ding_trigger(const char* source) {
     prometheus_set_ringing(1);
     prometheus_inc_ring();
     if (source && strcmp(source, "serial alarm") == 0) {
-        start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring");
+        start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring", 1);
     }
 
     PJ_LOG(3,(THIS_FILE, "Making outgoing call due to %s", source ? source : "DING"));
@@ -1095,7 +1618,7 @@ static void* ding_monitor_thread_func(void* arg) {
     ssize_t bytes_read;
 
     // Register this thread with PJLIB
-    pj_thread_desc desc;
+    pj_thread_desc desc = {0};
     pj_thread_t *thread;
     pj_status_t status;
 
@@ -1291,6 +1814,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_HANG_UP_1:
         prometheus_inc_uart_hangup();
         report_alarm_event(2);
+        set_call_active_status(PJ_FALSE);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
         terminate_call_from_serial(def->name);
@@ -1298,6 +1822,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_CMD_STOP_RING:
         prometheus_inc_uart_stop_ring();
         report_alarm_event(3);
+        set_call_active_status(PJ_FALSE);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
         terminate_call_from_serial(def->name);
@@ -1309,6 +1834,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         break;
     case UART_CODE_START_CALL:
         PJ_LOG(3,(THIS_FILE, "Intercom call line is active"));
+        set_call_active_status(PJ_TRUE);
         mqtt_publish_call_active(1);
         break;
     case UART_CODE_PUSH_STATE_0:
@@ -1333,7 +1859,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
 static void* serial_monitor_thread_func(void* arg) {
     unsigned char frame[4];
     size_t frame_len = 0;
-    pj_thread_desc desc;
+    pj_thread_desc desc = {0};
     pj_thread_t *thread;
     pj_status_t status;
 
@@ -1550,7 +2076,10 @@ static void* audio_input_handler(void* arg) {
 
     PJ_LOG(3,(THIS_FILE, "Audio input thread started"));
 
-    while (get_call_active_status() && !quit_flag) {
+    while (get_audio_engine_running() && !quit_flag) {
+        struct sockaddr_in sip_target;
+        int has_sip_target;
+
         // === AI -> RTP (microphone to network) ===
         bytes_read = audio_hw_get_frame(audio_buffer, app_config.audio_buffer_size);
         if (bytes_read > 0) {
@@ -1558,9 +2087,10 @@ static void* audio_input_handler(void* arg) {
         } else {
             consecutive_errors++;
             if (consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
-                PJ_LOG(1,(THIS_FILE, "Audio hardware input failed repeatedly"));
-                set_call_active_status(PJ_FALSE);
-                break;
+                if (consecutive_errors == MAX_CONSECUTIVE_ERRORS ||
+                    consecutive_errors % 100 == 0) {
+                    PJ_LOG(1,(THIS_FILE, "Audio hardware input failed repeatedly; sending fallback audio"));
+                }
             }
             generate_error_audio(audio_buffer, app_config.audio_buffer_size);
             bytes_read = app_config.audio_buffer_size;
@@ -1583,33 +2113,39 @@ static void* audio_input_handler(void* arg) {
         rtp_packet[11] = 0x01;
 
         memcpy(rtp_packet + 12, audio_buffer, bytes_read);
+        rtsp_stream_send_audio_rtp(rtp_packet, (size_t)bytes_read + 12);
 
-        // Send RTP packet
-        ssize_t bytes_sent = sendto(rtp_socket, rtp_packet, bytes_read + 12, 0,
-                            (struct sockaddr*)&remote_rtp_addr, sizeof(remote_rtp_addr));
-        if (bytes_sent < 0) {
-            rtp_send_failures++;
-            PJ_LOG(2,(THIS_FILE, "Failed to send RTP packet: %s (failure count: %d)", strerror(errno), rtp_send_failures));
+        has_sip_target = get_audio_sip_target(&sip_target);
+        if (has_sip_target) {
+            // Send RTP packet to the active SIP media endpoint.
+            ssize_t bytes_sent = sendto(rtp_socket, rtp_packet, bytes_read + 12, 0,
+                                (struct sockaddr*)&sip_target, sizeof(sip_target));
+            if (bytes_sent < 0) {
+                rtp_send_failures++;
+                PJ_LOG(2,(THIS_FILE, "Failed to send RTP packet: %s (failure count: %d)", strerror(errno), rtp_send_failures));
 
-            // If we have persistent send failures, check network health
-            if (rtp_send_failures >= 5) {
-                time_t now = time(NULL);
-                if (now - last_network_check >= 10) {  // Check every 10 seconds max
-                    PJ_LOG(2,(THIS_FILE, "Multiple RTP send failures, checking network health"));
-                    if (ensure_rtp_socket_ready() == 0) {
-                        PJ_LOG(3,(THIS_FILE, "Network recovery attempted, resetting failure count"));
-                        rtp_send_failures = 0;
+                // If we have persistent send failures, check network health
+                if (rtp_send_failures >= 5) {
+                    time_t now = time(NULL);
+                    if (now - last_network_check >= 10) {  // Check every 10 seconds max
+                        PJ_LOG(2,(THIS_FILE, "Multiple RTP send failures, checking network health"));
+                        if (ensure_rtp_socket_ready() == 0) {
+                            PJ_LOG(3,(THIS_FILE, "Network recovery attempted, resetting failure count"));
+                            rtp_send_failures = 0;
+                        }
+                        last_network_check = now;
                     }
-                    last_network_check = now;
+                }
+            } else {
+                packets_sent++;
+                bytes_payload_sent += (int)bytes_read;
+                // Successful send, reset failure counter
+                if (rtp_send_failures > 0) {
+                    rtp_send_failures = 0;
                 }
             }
-        } else {
-            packets_sent++;
-            bytes_payload_sent += (int)bytes_read;
-            // Successful send, reset failure counter
-            if (rtp_send_failures > 0) {
-                rtp_send_failures = 0;
-            }
+        } else if (rtp_send_failures > 0) {
+            rtp_send_failures = 0;
         }
 
         seq_num++;
@@ -1619,7 +2155,7 @@ static void* audio_input_handler(void* arg) {
     free(audio_buffer);
     free(rtp_packet);
 
-    PJ_LOG(3,(THIS_FILE, "Audio input thread stopped: packets=%d payload_bytes=%d",
+    PJ_LOG(3,(THIS_FILE, "Audio input thread stopped: sip_packets=%d sip_payload_bytes=%d",
               packets_sent, bytes_payload_sent));
     return NULL;
 }
@@ -1641,15 +2177,21 @@ static void* audio_output_handler(void* arg) {
 
     PJ_LOG(3,(THIS_FILE, "Audio output thread started"));
 
-    while (get_call_active_status() && !quit_flag) {
+    while (get_audio_engine_running() && !quit_flag) {
         // === RTP → AO (Network to speaker) ===
         struct sockaddr_in from_addr;
         socklen_t from_len = sizeof(from_addr);
+        int sip_active = get_audio_sip_rtp_active();
+
         bytes_read = recvfrom(rtp_socket, rtp_packet, app_config.audio_buffer_size + 12, MSG_DONTWAIT,
                              (struct sockaddr*)&from_addr, &from_len);
 
         if (bytes_read > 12) {
             unsigned char payload_type = rtp_packet[1] & 0x7F;
+            if (!sip_active) {
+                usleep(10000);
+                continue;
+            }
             if (logged_packets < 40 || payload_type == current_dtmf_payload_type) {
                 PJ_LOG(3,(THIS_FILE, "Incoming RTP audio: pt=%u len=%d from=%s:%u dtmf_pt=%d",
                           payload_type, (int)bytes_read,
@@ -1669,7 +2211,7 @@ static void* audio_output_handler(void* arg) {
             }
         }
 
-        usleep(1000); // 1ms polling for received packets - faster than input timing
+        usleep(sip_active ? 1000 : 10000);
     }
 
     free(rtp_packet);
@@ -1679,31 +2221,35 @@ static void* audio_output_handler(void* arg) {
     return NULL;
 }
 
-// Start audio session
-static void start_audio_session(const char* remote_ip, int remote_port) {
+static int ensure_audio_engine_running(const char* reason) {
     pj_status_t status;
-    const sip_call_session_t *session;
 
-    PJ_LOG(3,(THIS_FILE, "Starting audio session to %s:%d", remote_ip, remote_port));
-
-    session = sip_calling_get_session();
-    current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
-    if (session && session->remote_dtmf_payload_type > 0) {
-        current_dtmf_payload_type = session->remote_dtmf_payload_type;
+    pthread_mutex_lock(&audio_lifecycle_mutex);
+    if (get_audio_engine_running()) {
+        pthread_mutex_unlock(&audio_lifecycle_mutex);
+        return 0;
     }
-    PJ_LOG(3,(THIS_FILE, "Using DTMF RTP payload type %d", current_dtmf_payload_type));
 
-    memset(&remote_rtp_addr, 0, sizeof(remote_rtp_addr));
-    remote_rtp_addr.sin_family = AF_INET;
-    remote_rtp_addr.sin_port = htons(remote_port);
-    inet_pton(AF_INET, remote_ip, &remote_rtp_addr.sin_addr);
+    if (!pool) {
+        PJ_LOG(2,(THIS_FILE, "Audio engine not started for %s: PJ pool is not ready",
+                  reason ? reason : "unknown"));
+        pthread_mutex_unlock(&audio_lifecycle_mutex);
+        return -1;
+    }
+
+    PJ_LOG(3,(THIS_FILE, "Starting audio engine reason=%s",
+              reason ? reason : "unknown"));
 
     if (audio_hw_start(app_config.audio_chip_gpio, app_config.audio_buffer_size) < 0) {
         PJ_LOG(1,(THIS_FILE, "Failed to start audio hardware"));
-        return;
+        pthread_mutex_unlock(&audio_lifecycle_mutex);
+        return -1;
     }
 
-    set_call_active_status(PJ_TRUE);
+    set_audio_engine_running(1);
+
+    audio_input_thread = NULL;
+    audio_output_thread = NULL;
 
     // Create audio input thread using PJLIB
     status = pj_thread_create(pool, "audio_input",
@@ -1711,9 +2257,10 @@ static void start_audio_session(const char* remote_ip, int remote_port) {
                              PJ_THREAD_DEFAULT_STACK_SIZE, 0, &audio_input_thread);
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to create audio input thread: %d", status));
-        set_call_active_status(PJ_FALSE);
+        set_audio_engine_running(0);
         audio_hw_stop();
-        return;
+        pthread_mutex_unlock(&audio_lifecycle_mutex);
+        return -1;
     }
 
     // Create audio output thread using PJLIB
@@ -1722,46 +2269,120 @@ static void start_audio_session(const char* remote_ip, int remote_port) {
                              PJ_THREAD_DEFAULT_STACK_SIZE, 0, &audio_output_thread);
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to create audio output thread: %d", status));
-        set_call_active_status(PJ_FALSE);
-
-        // Clean up the input thread
-        pj_thread_destroy(audio_input_thread);
-        audio_input_thread = NULL;
-        audio_hw_stop();
-        return;
-    }
-
-    PJ_LOG(3,(THIS_FILE, "Audio threads created successfully"));
-}
-
-// Stop audio session
-static void stop_audio_session(void) {
-    if (get_call_active_status()) {
-        PJ_LOG(3,(THIS_FILE, "Stopping audio session"));
-
-        // If quit_flag is set, give audio thread time to send goodbye packets
-        if (quit_flag) {
-            PJ_LOG(3,(THIS_FILE, "Waiting for goodbye packets to be sent..."));
-            usleep(100000); // 100ms should be enough for 3 packets at 10ms intervals
-        }
-
-        set_call_active_status(PJ_FALSE);
-
-        // Wait for threads to complete using PJLIB functions
+        set_audio_engine_running(0);
         if (audio_input_thread) {
             pj_thread_join(audio_input_thread);
             pj_thread_destroy(audio_input_thread);
             audio_input_thread = NULL;
         }
-
-        if (audio_output_thread) {
-            pj_thread_join(audio_output_thread);
-            pj_thread_destroy(audio_output_thread);
-            audio_output_thread = NULL;
-        }
-
         audio_hw_stop();
+        pthread_mutex_unlock(&audio_lifecycle_mutex);
+        return -1;
     }
+
+    PJ_LOG(3,(THIS_FILE, "Audio engine started reason=%s",
+              reason ? reason : "unknown"));
+    pthread_mutex_unlock(&audio_lifecycle_mutex);
+    return 0;
+}
+
+static void stop_audio_engine(const char* reason) {
+    pthread_mutex_lock(&audio_lifecycle_mutex);
+    if (!get_audio_engine_running() && !audio_input_thread && !audio_output_thread) {
+        pthread_mutex_unlock(&audio_lifecycle_mutex);
+        return;
+    }
+
+    PJ_LOG(3,(THIS_FILE, "Stopping audio engine reason=%s",
+              reason ? reason : "unknown"));
+
+    clear_audio_sip_target();
+    set_audio_engine_running(0);
+
+    // If quit_flag is set, give audio thread time to send goodbye packets
+    if (quit_flag) {
+        PJ_LOG(3,(THIS_FILE, "Waiting for goodbye packets to be sent..."));
+        usleep(100000); // 100ms should be enough for 3 packets at 10ms intervals
+    }
+
+    // Wait for threads to complete using PJLIB functions
+    if (audio_input_thread) {
+        pj_thread_join(audio_input_thread);
+        pj_thread_destroy(audio_input_thread);
+        audio_input_thread = NULL;
+    }
+
+    if (audio_output_thread) {
+        pj_thread_join(audio_output_thread);
+        pj_thread_destroy(audio_output_thread);
+        audio_output_thread = NULL;
+    }
+
+    audio_hw_stop();
+    pthread_mutex_unlock(&audio_lifecycle_mutex);
+}
+
+static void maybe_stop_audio_engine(const char* reason) {
+    if (get_audio_sip_rtp_active()) {
+        return;
+    }
+    if (app_config.rtsp_enabled && rtsp_stream_get_audio_client_count() > 0) {
+        return;
+    }
+    stop_audio_engine(reason);
+}
+
+// Attach SIP RTP to the shared audio engine.
+static void start_audio_session(const char* remote_ip, int remote_port) {
+    const sip_call_session_t *session;
+    struct sockaddr_in target;
+
+    if (!remote_ip || !remote_ip[0] || remote_port <= 0) {
+        PJ_LOG(2,(THIS_FILE, "Invalid SIP audio target %s:%d",
+                  remote_ip ? remote_ip : "-", remote_port));
+        return;
+    }
+
+    PJ_LOG(3,(THIS_FILE, "Attaching SIP audio target %s:%d", remote_ip, remote_port));
+
+    session = sip_calling_get_session();
+    current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
+    if (session && session->remote_dtmf_payload_type > 0) {
+        current_dtmf_payload_type = session->remote_dtmf_payload_type;
+    }
+    PJ_LOG(3,(THIS_FILE, "Using DTMF RTP payload type %d", current_dtmf_payload_type));
+
+    memset(&target, 0, sizeof(target));
+    target.sin_family = AF_INET;
+    target.sin_port = htons(remote_port);
+    if (inet_pton(AF_INET, remote_ip, &target.sin_addr) != 1) {
+        PJ_LOG(2,(THIS_FILE, "Invalid SIP audio RTP IP: %s", remote_ip));
+        return;
+    }
+
+    pthread_mutex_lock(&audio_state_mutex);
+    remote_rtp_addr = target;
+    audio_sip_rtp_active = 1;
+    pthread_mutex_unlock(&audio_state_mutex);
+
+    if (ensure_audio_engine_running("sip") < 0) {
+        clear_audio_sip_target();
+        return;
+    }
+
+    PJ_LOG(3,(THIS_FILE, "SIP audio target attached %s:%d", remote_ip, remote_port));
+}
+
+// Detach SIP RTP from the shared audio engine.
+static void stop_audio_session(void) {
+    if (!get_audio_sip_rtp_active()) {
+        maybe_stop_audio_engine("sip-no-target");
+        return;
+    }
+
+    PJ_LOG(3,(THIS_FILE, "Detaching SIP audio target"));
+    clear_audio_sip_target();
+    maybe_stop_audio_engine("sip-ended");
 }
 
 // Handle incoming SIP responses
@@ -1852,12 +2473,15 @@ int main(int argc, char *argv[]) {
     }
 
     app_config.ring_snapshot_delay_ms = clamp_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
+    app_config.video_recording_max_seconds = clamp_recording_max_seconds(app_config.video_recording_max_seconds);
 
     // Print loaded configuration
     config_print(&app_config);
 
     // Get and display local IP
     get_local_ip(local_ip, sizeof(local_ip));
+    strncpy(local_ip_addr, local_ip, sizeof(local_ip_addr) - 1);
+    local_ip_addr[sizeof(local_ip_addr) - 1] = '\0';
     printf("Wibox SIP Media Client - Local IP: %s\n", local_ip);
 
     memset(&mqtt_callbacks, 0, sizeof(mqtt_callbacks));
@@ -1869,6 +2493,7 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.set_outgoing_call_timeout = mqtt_set_outgoing_call_timeout_callback;
     mqtt_callbacks.set_ring_snapshot_delay = mqtt_set_ring_snapshot_delay_callback;
     mqtt_callbacks.set_call_forward_enabled = mqtt_set_call_forward_enabled_callback;
+    mqtt_callbacks.set_rtsp_enabled = mqtt_set_rtsp_enabled_callback;
     mqtt_init(&app_config, local_ip, &mqtt_callbacks, NULL);
     if (app_config.prometheus_enabled && prometheus_start(app_config.prometheus_port) < 0) {
         printf("Warning: Failed to start Prometheus exporter\n");
@@ -1920,6 +2545,8 @@ int main(int argc, char *argv[]) {
         pj_shutdown();
         return 1;
     }
+
+    start_rtsp_service();
 
     // Create SIP endpoint
     status = pjsip_endpt_create(&cp.factory, "wibox", &sip_endpt);
@@ -2006,19 +2633,20 @@ int main(int argc, char *argv[]) {
 
         // NAT keep-alive during active calls (every 20 seconds)
         time_t now = time(NULL);
-        if (get_call_active_status() && (now - last_nat_keepalive >= 20)) {
+        if (get_audio_sip_rtp_active() && (now - last_nat_keepalive >= 20)) {
             send_nat_keepalive();
             last_nat_keepalive = now;
         }
     }
 
     // Cleanup
+    stop_video_session();
+    stop_audio_engine("shutdown");
+    stop_rtsp_service();
     mqtt_stop();
     prometheus_stop();
     stop_serial_monitoring();
     stop_ding_monitoring();
-    stop_video_session();
-    stop_audio_session();
 
     // Terminate any active call
     sip_calling_terminate_call();

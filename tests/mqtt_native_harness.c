@@ -10,6 +10,7 @@ typedef struct {
     int f1_count;
     int snapshot_count;
     int video_value;
+    int rtsp_value;
     int video_bitrate;
     int call_timeout;
     int ring_snapshot_delay;
@@ -38,6 +39,13 @@ static void on_video_enabled(int enabled, void* user_data) {
     harness_state_t* state = (harness_state_t*)user_data;
     state->video_value = enabled;
     printf("CALLBACK video_enabled=%d\n", enabled);
+}
+
+static void on_rtsp_enabled(int enabled, void* user_data) {
+    harness_state_t* state = (harness_state_t*)user_data;
+    state->rtsp_value = enabled;
+    mqtt_publish_rtsp_enabled(enabled);
+    printf("CALLBACK rtsp_enabled=%d\n", enabled);
 }
 
 static void on_video_bitrate(int bitrate_kbps, void* user_data) {
@@ -73,6 +81,7 @@ int main(void) {
     memset(&callbacks, 0, sizeof(callbacks));
     memset(&state, 0, sizeof(state));
     state.video_value = -1;
+    state.rtsp_value = -1;
     state.video_bitrate = -1;
     state.call_timeout = -1;
     state.ring_snapshot_delay = -1;
@@ -93,6 +102,7 @@ int main(void) {
     callbacks.trigger_f1 = on_trigger_f1;
     callbacks.take_snapshot = on_take_snapshot;
     callbacks.set_video_enabled = on_video_enabled;
+    callbacks.set_rtsp_enabled = on_rtsp_enabled;
     callbacks.set_video_bitrate = on_video_bitrate;
     callbacks.set_outgoing_call_timeout = on_call_timeout;
     callbacks.set_ring_snapshot_delay = on_ring_snapshot_delay;
@@ -108,6 +118,7 @@ int main(void) {
     for (i = 0; i < 80 && (state.open_count == 0 || state.f1_count == 0 ||
                            state.snapshot_count == 0 ||
                            state.video_value != 0 ||
+                           state.rtsp_value != 1 ||
                            state.video_bitrate != 2048 ||
                            state.call_timeout != 45 ||
                            state.ring_snapshot_delay != 1500 ||
@@ -117,12 +128,12 @@ int main(void) {
 
     mqtt_publish_door_unlocked_pulse();
     mqtt_stop();
-    printf("RESULT open=%d f1=%d snapshot=%d video=%d bitrate=%d timeout=%d ring_snapshot_delay=%d call_forward=%d\n",
+    printf("RESULT open=%d f1=%d snapshot=%d video=%d rtsp=%d bitrate=%d timeout=%d ring_snapshot_delay=%d call_forward=%d\n",
            state.open_count, state.f1_count, state.snapshot_count,
-           state.video_value, state.video_bitrate, state.call_timeout,
+           state.video_value, state.rtsp_value, state.video_bitrate, state.call_timeout,
            state.ring_snapshot_delay, state.call_forward_value);
     return (state.open_count == 1 && state.f1_count == 1 && state.snapshot_count == 1 &&
-            state.video_value == 0 && state.video_bitrate == 2048 &&
+            state.video_value == 0 && state.rtsp_value == 1 && state.video_bitrate == 2048 &&
             state.call_timeout == 45 && state.ring_snapshot_delay == 1500 &&
             state.call_forward_value == 0) ? 0 : 1;
 }

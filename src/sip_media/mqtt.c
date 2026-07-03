@@ -39,6 +39,7 @@ typedef struct {
     char device_name[128];
     char local_ip[64];
     int video_enabled;
+    int rtsp_enabled;
     int video_bitrate_kbps;
     int outgoing_call_timeout;
     int ring_snapshot_delay_ms;
@@ -800,6 +801,29 @@ static void publish_video_switch_config(void) {
     mqtt_publish_raw(topic, payload, 1);
 }
 
+static void publish_rtsp_switch_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "switch", "rtsp_enabled");
+    topic_path(state_topic, sizeof(state_topic), "rtsp/enabled");
+    topic_path(command_topic, sizeof(command_topic), "rtsp/enabled/set");
+    unique_id(uid, sizeof(uid), "rtsp_enabled");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"RTSP Enabled\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"availability_topic\":\"%s\",\"payload_on\":\"ON\","
+             "\"payload_off\":\"OFF\",\"retain\":true,\"icon\":\"mdi:cctv\",%s}",
+             uid, state_topic, command_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_call_forward_switch_config(void) {
     char topic[256];
     char state_topic[256];
@@ -1049,6 +1073,7 @@ void mqtt_publish_discovery(void) {
     publish_unlock_binary_sensor_config();
     publish_sensor_config("wifi_rssi", "WiFi RSSI", "wifi/rssi", "signal_strength", "wifi");
     publish_video_switch_config();
+    publish_rtsp_switch_config();
     publish_number_config("video_bitrate", "Video Bitrate", "video/bitrate_kbps",
                           512, 4096, 256, "kbps", "video-high-definition");
     publish_number_config("outgoing_call_timeout", "Outgoing Call Timeout",
@@ -1087,6 +1112,11 @@ void mqtt_publish_video_active(int active) {
 void mqtt_publish_video_enabled(int enabled) {
     mqtt_state.video_enabled = enabled ? 1 : 0;
     publish_suffix("video/enabled", enabled ? "ON" : "OFF", 1);
+}
+
+void mqtt_publish_rtsp_enabled(int enabled) {
+    mqtt_state.rtsp_enabled = enabled ? 1 : 0;
+    publish_suffix("rtsp/enabled", enabled ? "ON" : "OFF", 1);
 }
 
 void mqtt_publish_video_bitrate(int bitrate_kbps) {
@@ -1192,7 +1222,11 @@ static int parse_int_payload(const char* payload, int* value) {
     return 0;
 }
 
-static void handle_mqtt_message(const char* topic, const char* payload) {
+static void log_ignored_retained_command(const char* topic) {
+    printf("%s: ignored retained command topic=%s\n", MQTT_FILE, topic ? topic : "");
+}
+
+static void handle_mqtt_message(const char* topic, const char* payload, int retain) {
     char expected[256];
     int int_value;
 
@@ -1213,6 +1247,10 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
 
     topic_path(expected, sizeof(expected), "door/open/set");
     if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
         if (payload_is_on(payload) && mqtt_state.callbacks.open_door) {
             printf("%s: open door command received\n", MQTT_FILE);
             mqtt_state.callbacks.open_door(mqtt_state.user_data);
@@ -1222,6 +1260,10 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
 
     topic_path(expected, sizeof(expected), "f1/trigger/set");
     if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
         if (payload_is_on(payload) && mqtt_state.callbacks.trigger_f1) {
             printf("%s: F1 function command received\n", MQTT_FILE);
             mqtt_state.callbacks.trigger_f1(mqtt_state.user_data);
@@ -1231,6 +1273,10 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
 
     topic_path(expected, sizeof(expected), "snapshot/take/set");
     if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
         if (payload_is_on(payload) && mqtt_state.callbacks.take_snapshot) {
             printf("%s: take snapshot command received\n", MQTT_FILE);
             mqtt_state.callbacks.take_snapshot(mqtt_state.user_data);
@@ -1244,6 +1290,16 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
             mqtt_state.callbacks.set_video_enabled(1, mqtt_state.user_data);
         } else if (payload_is_off(payload) && mqtt_state.callbacks.set_video_enabled) {
             mqtt_state.callbacks.set_video_enabled(0, mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "rtsp/enabled/set");
+    if (strcmp(topic, expected) == 0) {
+        if (payload_is_on(payload) && mqtt_state.callbacks.set_rtsp_enabled) {
+            mqtt_state.callbacks.set_rtsp_enabled(1, mqtt_state.user_data);
+        } else if (payload_is_off(payload) && mqtt_state.callbacks.set_rtsp_enabled) {
+            mqtt_state.callbacks.set_rtsp_enabled(0, mqtt_state.user_data);
         }
         return;
     }
@@ -1287,6 +1343,10 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
 
     topic_path(expected, sizeof(expected), "firmware/update/install/set");
     if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
         if (payload_is_on(payload)) {
             printf("%s: firmware update install requested\n", MQTT_FILE);
             start_firmware_update_install();
@@ -1296,6 +1356,10 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
 
     topic_path(expected, sizeof(expected), "firmware/update/check/set");
     if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
         if (payload_is_on(payload) && mqtt_state.firmware_update_enabled) {
             if (mqtt_state.firmware_update_installing) {
                 printf("%s: firmware update refresh ignored while install is in progress\n", MQTT_FILE);
@@ -1309,22 +1373,42 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
 }
 
 static int mqtt_subscribe_topics(void) {
-    unsigned char packet[512];
+    static const char* command_suffixes[] = {
+        "door/open/set",
+        "f1/trigger/set",
+        "snapshot/take/set",
+        "snapshot/ring_delay_ms/set",
+        "video/enabled/set",
+        "rtsp/enabled/set",
+        "video/bitrate_kbps/set",
+        "call/timeout_seconds/set",
+        "call_forward/enabled/set",
+        "firmware/update/install/set",
+        "firmware/update/check/set"
+    };
+    unsigned char packet[2048];
     unsigned char response[64];
     unsigned char type;
     size_t pos = 0;
     int len = 0;
-    char wildcard[256];
+    size_t i;
+    char topic[256];
 
     if (++mqtt_state.packet_id == 0) mqtt_state.packet_id = 1;
-    snprintf(wildcard, sizeof(wildcard), "%s/#", mqtt_state.base_topic);
 
-    if (mqtt_append_u16(packet, sizeof(packet), &pos, mqtt_state.packet_id) < 0 ||
-        mqtt_append_str(packet, sizeof(packet), &pos, mqtt_state.base_topic) < 0 ||
-        mqtt_append_bytes(packet, sizeof(packet), &pos, (const unsigned char*)"\x00", 1) < 0 ||
-        mqtt_append_str(packet, sizeof(packet), &pos, wildcard) < 0 ||
+    if (mqtt_append_u16(packet, sizeof(packet), &pos, mqtt_state.packet_id) < 0) {
+        return -1;
+    }
+    if (mqtt_append_str(packet, sizeof(packet), &pos, mqtt_state.base_topic) < 0 ||
         mqtt_append_bytes(packet, sizeof(packet), &pos, (const unsigned char*)"\x00", 1) < 0) {
         return -1;
+    }
+    for (i = 0; i < sizeof(command_suffixes) / sizeof(command_suffixes[0]); i++) {
+        topic_path(topic, sizeof(topic), command_suffixes[i]);
+        if (mqtt_append_str(packet, sizeof(packet), &pos, topic) < 0 ||
+            mqtt_append_bytes(packet, sizeof(packet), &pos, (const unsigned char*)"\x00", 1) < 0) {
+            return -1;
+        }
     }
 
     if (mqtt_send_packet(0x82, packet, pos) < 0 ||
@@ -1336,7 +1420,7 @@ static int mqtt_subscribe_topics(void) {
     return 0;
 }
 
-static void mqtt_handle_publish(const unsigned char* payload, int len) {
+static void mqtt_handle_publish(const unsigned char* payload, int len, int retain) {
     unsigned short topic_len;
     char topic[256];
     char message[512];
@@ -1355,7 +1439,7 @@ static void mqtt_handle_publish(const unsigned char* payload, int len) {
     memcpy(message, payload + 2 + topic_len, (size_t)message_len);
     message[message_len] = '\0';
 
-    handle_mqtt_message(topic, message);
+    handle_mqtt_message(topic, message, retain);
 }
 
 static int mqtt_process_once(void) {
@@ -1385,7 +1469,7 @@ static int mqtt_process_once(void) {
 
     switch (type & 0xf0) {
     case 0x30:
-        mqtt_handle_publish(payload, len);
+        mqtt_handle_publish(payload, len, type & 0x01);
         break;
     case 0xd0: /* PINGRESP */
         break;
@@ -1425,8 +1509,9 @@ static void* mqtt_thread_func(void* arg) {
             firmware_update_check_and_publish();
         }
         publish_suffix("door/unlocked", "OFF", 1);
-        mqtt_publish_snapshot_available(1);
+        mqtt_publish_snapshot_available(mqtt_state.video_enabled);
         mqtt_publish_video_enabled(mqtt_state.video_enabled);
+        mqtt_publish_rtsp_enabled(mqtt_state.rtsp_enabled);
         mqtt_publish_video_bitrate(mqtt_state.video_bitrate_kbps);
         mqtt_publish_outgoing_call_timeout(mqtt_state.outgoing_call_timeout);
         mqtt_publish_ring_snapshot_delay(mqtt_state.ring_snapshot_delay_ms);
@@ -1485,6 +1570,7 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
     strncpy(mqtt_state.ha_prefix, app_config->mqtt_homeassistant_prefix, sizeof(mqtt_state.ha_prefix) - 1);
     strncpy(mqtt_state.local_ip, local_ip ? local_ip : "0.0.0.0", sizeof(mqtt_state.local_ip) - 1);
     mqtt_state.video_enabled = app_config->video_enabled;
+    mqtt_state.rtsp_enabled = app_config->rtsp_enabled;
     mqtt_state.video_bitrate_kbps = app_config->video_bitrate_kbps;
     mqtt_state.outgoing_call_timeout = app_config->outgoing_call_timeout;
     mqtt_state.ring_snapshot_delay_ms = app_config->ring_snapshot_delay_ms;
