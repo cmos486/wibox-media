@@ -28,6 +28,10 @@ video_enabled=0
 video_rtp_port=8002
 video_payload_type=96
 video_bitrate_kbps=4096
+video_gop_n=25
+video_idr_interval=1
+video_brc_mode=0
+video_rtsp_periodic_idr_ms=0
 video_recording_enabled=0
 video_recording_path=/tmp/wibox-last-call.h264
 video_recording_max_seconds=30
@@ -88,6 +92,21 @@ On hangup or failure, it stops media and sends `STOP_CALL` when needed.
 encoder. The runtime default is `4096`; values are clamped between `512` and
 `4096` kbps. Higher values can reduce macroblocking, but low light, analog CVBS
 noise and client-side decode limits still affect quality.
+
+Advanced H.264 encoder knobs:
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `video_gop_n` | `25` | Main stream GOP length. At 25 fps this gives roughly one natural IDR per second. |
+| `video_idr_interval` | `1` | IDR interval inside the GK H.264 config. Keep `1` unless testing carefully. |
+| `video_brc_mode` | `0` | Bitrate-control mode passed to the GK encoder. `0` is the stable default; `1` has been tested but can exceed the requested bitrate. |
+| `video_rtsp_periodic_idr_ms` | `0` | Extra periodic IDR requests for RTSP. `0` disables them; new RTSP/SIP clients still request one IDR on attach. |
+
+The default GOP/IDR policy is intentionally conservative: use the encoder's
+natural GOP (`video_gop_n=25`) and request IDR frames only when a new client
+attaches or startup needs one. This avoids spending bitrate on unnecessary RTSP
+keyframes every few seconds. Re-enable periodic RTSP IDR only if a downstream
+consumer cannot recover after packet loss.
 
 ## Video Recording
 

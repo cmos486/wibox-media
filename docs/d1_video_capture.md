@@ -153,6 +153,19 @@ The production daemon passes `video_bitrate_kbps` from `/mnt/mtd/sip_media.conf`
 to the worker. The worker defaults to `4096` kbps and clamps requested values to
 `512`-`4096` kbps before programming the stream-0 H.264 bitrate ioctls.
 
+The production H.264 defaults are GOP-N `25`, IDR interval `1`, BRC mode `0`
+and no periodic RTSP IDR requests. On the test WiBox at 4096 kbps, a 12 second
+RTSP capture with the old periodic RTSP IDR behavior produced 18 keyframes; the
+current default produced 13 keyframes, close to the natural 25-frame GOP. The
+worker still forces IDR at startup and when SIP/RTSP clients attach so decoders
+can start quickly without continuously wasting bitrate on extra keyframes.
+
+BRC mode `1` was also tested for 12 seconds with the same 4096 kbps target. It
+kept the same 13-keyframe GOP pattern but produced about 5.6 Mbps of H.264,
+above the configured budget. It may reduce visible compression slightly, but it
+also sends more analog CVBS noise and increases WiFi/SIP/RTSP load, so BRC mode
+`0` remains the default.
+
 The frame interval ioctl must match Sofia:
 
 ```c

@@ -1,9 +1,17 @@
 #ifndef VIDEO_WORKER_H
 #define VIDEO_WORKER_H
 
+typedef struct {
+    int gop_n;
+    int idr_interval;
+    int brc_mode;
+    int rtsp_periodic_idr_ms;
+} video_encoder_tuning_t;
+
 int video_worker_run(const char* remote_ip, int remote_port,
                      int local_port, int payload_type,
                      int bitrate_kbps,
+                     const video_encoder_tuning_t* tuning,
                      const char* dumpfile,
                      long long dump_limit_bytes,
                      int rtsp_video_fd,

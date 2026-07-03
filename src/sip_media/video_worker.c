@@ -9,6 +9,7 @@
 int video_worker_run(const char* remote_ip, int remote_port,
                      int local_port, int payload_type,
                      int bitrate_kbps,
+                     const video_encoder_tuning_t* tuning,
                      const char* dumpfile,
                      long long dump_limit_bytes,
                      int rtsp_video_fd,
@@ -22,6 +23,12 @@ int video_worker_run(const char* remote_ip, int remote_port,
     opt.local_port = local_port;
     opt.payload_type = payload_type;
     opt.bitrate_kbps = bitrate_kbps;
+    if (tuning) {
+        opt.gop_n = tuning->gop_n;
+        opt.idr_interval = tuning->idr_interval;
+        opt.brc_mode = tuning->brc_mode;
+        opt.rtsp_periodic_idr_ms = tuning->rtsp_periodic_idr_ms;
+    }
     opt.dumpfile = dumpfile;
     opt.dump_limit_bytes = dump_limit_bytes;
     opt.rtp_sink_fd = rtsp_video_fd;

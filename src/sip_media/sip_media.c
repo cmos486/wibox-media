@@ -158,6 +158,8 @@ static int attach_video_worker_rtp(const char* remote_ip, int remote_video_port,
                                    int payload_type);
 static int clear_video_worker_rtp(void);
 static int clear_video_worker_rtsp(void);
+static int force_video_worker_idr(const char* reason);
+static void populate_video_encoder_tuning(video_encoder_tuning_t* tuning);
 static void release_sip_video_or_stop(const char* reason);
 static void close_video_control_fd(void);
 static void stop_video_session(void);
@@ -772,6 +774,22 @@ static int clear_video_worker_rtsp(void) {
     return write_video_control_command(command, sizeof(command) - 1);
 }
 
+static int force_video_worker_idr(const char* reason) {
+    const char command[] = "FORCE_IDR\n";
+    int ret;
+
+    if (video_bridge_pid <= 0 || video_bridge_control_fd < 0) {
+        return -1;
+    }
+
+    ret = write_video_control_command(command, sizeof(command) - 1);
+    if (ret == 0) {
+        PJ_LOG(3,(THIS_FILE, "Requested video IDR frame (%s)",
+                  reason ? reason : "unknown"));
+    }
+    return ret;
+}
+
 static void start_video_session(const char* remote_ip, int remote_video_port) {
     const sip_call_session_t *session;
     int payload_type;
@@ -828,6 +846,7 @@ static int start_video_worker(const char* remote_ip, int remote_video_port,
     int recording_seconds;
     int control_pipe[2] = {-1, -1};
     int has_sip_rtp = remote_ip && remote_ip[0] && remote_video_port > 0;
+    video_encoder_tuning_t tuning;
 
     if (!app_config.video_enabled) {
         PJ_LOG(3,(THIS_FILE, "Video worker not started: video disabled"));
@@ -840,6 +859,7 @@ static int start_video_worker(const char* remote_ip, int remote_video_port,
     if (payload_type <= 0 || payload_type > 127) {
         payload_type = app_config.video_payload_type;
     }
+    populate_video_encoder_tuning(&tuning);
 
     if (has_sip_rtp &&
         app_config.video_recording_enabled && app_config.video_recording_path[0]) {
@@ -897,6 +917,7 @@ static int start_video_worker(const char* remote_ip, int remote_video_port,
                                has_sip_rtp ? app_config.video_rtp_port : 0,
                                payload_type,
                                app_config.video_bitrate_kbps,
+                               &tuning,
                                dumpfile, dump_limit_bytes,
                                rtsp_video_fd, control_pipe[0]));
     }
@@ -904,10 +925,12 @@ static int start_video_worker(const char* remote_ip, int remote_video_port,
     close(control_pipe[0]);
     video_bridge_control_fd = control_pipe[1];
     video_bridge_has_sip_rtp = has_sip_rtp ? 1 : 0;
-    PJ_LOG(3,(THIS_FILE, "Started video worker pid=%d reason=%s sip_rtp=%d target=%s:%d payload=%d bitrate=%dkbps rtsp_fd=%d",
+    PJ_LOG(3,(THIS_FILE, "Started video worker pid=%d reason=%s sip_rtp=%d target=%s:%d payload=%d bitrate=%dkbps gop_n=%d idr_interval=%d brc_mode=%d rtsp_periodic_idr_ms=%d rtsp_fd=%d",
               video_bridge_pid, reason ? reason : "unknown", video_bridge_has_sip_rtp,
               has_sip_rtp ? remote_ip : "-", has_sip_rtp ? remote_video_port : 0,
-              payload_type, app_config.video_bitrate_kbps, rtsp_video_fd));
+              payload_type, app_config.video_bitrate_kbps, tuning.gop_n,
+              tuning.idr_interval, tuning.brc_mode, tuning.rtsp_periodic_idr_ms,
+              rtsp_video_fd));
     mqtt_publish_video_active(1);
     prometheus_set_video_active(1);
     prometheus_inc_video_started();
@@ -1061,6 +1084,7 @@ static void on_rtsp_client_count_change(int video_clients, int audio_clients, vo
     int should_stop_preview;
     int should_start_audio;
     int should_maybe_stop_audio;
+    int should_force_idr;
 
     (void)user_data;
 
@@ -1069,6 +1093,8 @@ static void on_rtsp_client_count_change(int video_clients, int audio_clients, vo
     should_start_preview = app_config.rtsp_enabled && app_config.video_enabled &&
                            video_clients > 0 && video_bridge_pid <= 0;
     pthread_mutex_unlock(&snapshot_mutex);
+    should_force_idr = app_config.rtsp_enabled && app_config.video_enabled &&
+                       video_clients > 0 && video_bridge_pid > 0;
     should_stop_preview = (!app_config.rtsp_enabled || !app_config.video_enabled ||
                           video_clients == 0) && video_bridge_pid > 0 &&
                           !video_bridge_has_sip_rtp &&
@@ -1076,7 +1102,7 @@ static void on_rtsp_client_count_change(int video_clients, int audio_clients, vo
     should_start_audio = audio_clients > 0 && !get_audio_engine_running();
     should_maybe_stop_audio = audio_clients == 0;
     if (!should_start_preview && !should_stop_preview &&
-        !should_start_audio && !should_maybe_stop_audio) {
+        !should_start_audio && !should_maybe_stop_audio && !should_force_idr) {
         return;
     }
 
@@ -1089,7 +1115,13 @@ static void on_rtsp_client_count_change(int video_clients, int audio_clients, vo
     }
 
     if (should_start_preview) {
-        start_rtsp_preview_session("rtsp-client");
+        if (start_rtsp_preview_session("rtsp-client")) {
+            should_force_idr = 1;
+        }
+    }
+
+    if (should_force_idr) {
+        force_video_worker_idr("rtsp-client");
     }
 
     if (should_stop_preview) {
@@ -1362,6 +1394,43 @@ static int clamp_video_bitrate(int bitrate_kbps) {
     if (rounded < 512) return 512;
     if (rounded > 4096) return 4096;
     return rounded;
+}
+
+static int clamp_video_gop_n(int gop_n) {
+    if (gop_n <= 0) return 25;
+    if (gop_n < 5) return 5;
+    if (gop_n > 120) return 120;
+    return gop_n;
+}
+
+static int clamp_video_idr_interval(int idr_interval) {
+    if (idr_interval <= 0) return 1;
+    if (idr_interval > 10) return 10;
+    return idr_interval;
+}
+
+static int clamp_video_brc_mode(int brc_mode) {
+    if (brc_mode < 0 || brc_mode > 3) return 0;
+    return brc_mode;
+}
+
+static int clamp_video_rtsp_periodic_idr_ms(int interval_ms) {
+    if (interval_ms <= 0) return 0;
+    if (interval_ms < 500) return 500;
+    if (interval_ms > 10000) return 10000;
+    return interval_ms;
+}
+
+static void populate_video_encoder_tuning(video_encoder_tuning_t* tuning) {
+    if (!tuning) {
+        return;
+    }
+
+    tuning->gop_n = clamp_video_gop_n(app_config.video_gop_n);
+    tuning->idr_interval = clamp_video_idr_interval(app_config.video_idr_interval);
+    tuning->brc_mode = clamp_video_brc_mode(app_config.video_brc_mode);
+    tuning->rtsp_periodic_idr_ms =
+        clamp_video_rtsp_periodic_idr_ms(app_config.video_rtsp_periodic_idr_ms);
 }
 
 static int clamp_outgoing_call_timeout(int timeout_seconds) {
@@ -2458,15 +2527,21 @@ int main(int argc, char *argv[]) {
     char local_ip[16];
     sip_call_config_t call_config;
     mqtt_callbacks_t mqtt_callbacks;
+    const char *config_file = argc > 1 && argv[1] && argv[1][0] ? argv[1] : CONFIG_FILE;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
     // Load configuration first
-    if (config_load(CONFIG_FILE, &app_config) < 0) {
-        printf("Warning: %s load failed, trying legacy %s\n",
-               CONFIG_FILE, LEGACY_CONFIG_FILE);
-        if (config_load(LEGACY_CONFIG_FILE, &app_config) < 0) {
+    if (config_load(config_file, &app_config) < 0) {
+        if (strcmp(config_file, CONFIG_FILE) == 0) {
+            printf("Warning: %s load failed, trying legacy %s\n",
+                   CONFIG_FILE, LEGACY_CONFIG_FILE);
+            if (config_load(LEGACY_CONFIG_FILE, &app_config) < 0) {
+                printf("Warning: Configuration load failed, using defaults\n");
+                config_init_defaults(&app_config);
+            }
+        } else {
             printf("Warning: Configuration load failed, using defaults\n");
             config_init_defaults(&app_config);
         }

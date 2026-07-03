@@ -106,6 +106,11 @@ startup. Video resolution is not exposed as a free-form setting; the proven
 capture mode is D1 `688x576`, and any future resolution control must be a
 closed MQTT select.
 
+Advanced H.264 defaults are `video_gop_n=25`, `video_idr_interval=1`,
+`video_brc_mode=0` and `video_rtsp_periodic_idr_ms=0`. This keeps the natural
+one-second GOP and avoids periodic RTSP IDR spam; new clients still request an
+IDR frame when they attach.
+
 File recording is disabled by default; at 4096 kbps a 30 second H.264 clip is
 about 15 MiB and only fits temporarily in `/tmp`, never in persistent flash.
 Experimental RTSP can be enabled with `rtsp_enabled=1`; it exposes

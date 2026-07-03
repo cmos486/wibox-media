@@ -12,6 +12,10 @@ typedef struct {
     int video_rtp_port;
     int video_payload_type;
     int video_bitrate_kbps;
+    int video_gop_n;
+    int video_idr_interval;
+    int video_brc_mode;
+    int video_rtsp_periodic_idr_ms;
     int ring_snapshot_delay_ms;
     int video_recording_enabled;
     char video_recording_path[256];

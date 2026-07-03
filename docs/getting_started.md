@@ -185,10 +185,12 @@ daemon waits after a physical ring before taking the automatic snapshot.
 
 Without retained MQTT commands or file overrides, the built-in defaults are
 `video_enabled=0`, `rtsp_enabled=0`, `video_bitrate_kbps=4096`,
-`outgoing_call_timeout=60` and `ring_snapshot_delay_ms=2000`. These keys may be
-kept in the config file as boot defaults, but the Home Assistant entities
-publish retained MQTT command values. Those retained values are replayed after
-reboot and take priority over the file.
+`video_gop_n=25`, `video_idr_interval=1`, `video_brc_mode=0`,
+`video_rtsp_periodic_idr_ms=0`, `outgoing_call_timeout=60` and
+`ring_snapshot_delay_ms=2000`. These keys may be kept in the config file as boot
+defaults, but the Home Assistant entities publish retained MQTT command values
+for their exposed controls. Those retained values are replayed after reboot and
+take priority over the file.
 Resolution is intentionally not configurable yet; D1 `688x576` is the only
 validated video mode.
 

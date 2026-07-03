@@ -66,7 +66,6 @@
 
 #define DEVICE "/dev/gk_video"
 #define RTSP_H264_PAYLOAD_TYPE 96
-#define RTSP_IDR_INTERVAL_MS 2000
 #define SNAPSHOT_STREAM_ID 2
 #define SNAPSHOT_WIDTH 352
 #define SNAPSHOT_HEIGHT 288
@@ -106,6 +105,8 @@ struct srcbuf_format_t {
 static int gfd = -1;
 static volatile sig_atomic_t get_stream_timed_out = 0;
 static volatile sig_atomic_t stop_requested = 0;
+
+static int force_idr_stream0(const char *reason);
 
 struct nal_cache {
     uint8_t *data;
@@ -600,6 +601,8 @@ static int poll_rtp_control(int control_fd, struct rtp_sender *rtp,
                 rtp_sender_clear_sink(rtp);
                 printf("[RTP_CONTROL] detached RTSP sink; RTP target remains active\n");
                 changed = 1;
+            } else if (strncmp(buf, "FORCE_IDR", 9) == 0) {
+                force_idr_stream0("control");
             } else if (sscanf(buf, "SNAPSHOT %159s %d", path, &quality) >= 1) {
                 if (!snapshot) {
                     printf("[SNAPSHOT_CONTROL] no snapshot state available\n");
@@ -757,6 +760,53 @@ static int clamp_bitrate_kbps(int bitrate_kbps)
     return bitrate_kbps;
 }
 
+static int clamp_gop_n(int gop_n)
+{
+    if (gop_n <= 0) {
+        return 25;
+    }
+    if (gop_n < 5) {
+        return 5;
+    }
+    if (gop_n > 120) {
+        return 120;
+    }
+    return gop_n;
+}
+
+static int clamp_idr_interval(int idr_interval)
+{
+    if (idr_interval <= 0) {
+        return 1;
+    }
+    if (idr_interval > 10) {
+        return 10;
+    }
+    return idr_interval;
+}
+
+static int clamp_brc_mode(int brc_mode)
+{
+    if (brc_mode < 0 || brc_mode > 3) {
+        return 0;
+    }
+    return brc_mode;
+}
+
+static int clamp_rtsp_periodic_idr_ms(int interval_ms)
+{
+    if (interval_ms <= 0) {
+        return 0;
+    }
+    if (interval_ms < 500) {
+        return 500;
+    }
+    if (interval_ms > 10000) {
+        return 10000;
+    }
+    return interval_ms;
+}
+
 static void set_frame_interval_stream(int stream_id)
 {
     struct {
@@ -803,21 +853,24 @@ static void set_encode_format_stream(int stream_id, int channel_id,
     set_encode_format_stream_type(stream_id, channel_id, 1, width, height, fps);
 }
 
-static void set_bitrate_stream(int stream_id, uint32_t cbr, uint32_t min, uint32_t max)
+static void set_bitrate_stream(int stream_id, int brc_mode,
+                               uint32_t cbr, uint32_t min, uint32_t max)
 {
     uint8_t br[128];
     memset(br, 0, sizeof(br));
     *(uint32_t *)(br + 0) = 1U << stream_id;
-    *(uint32_t *)(br + 4) = 0;
+    *(uint32_t *)(br + 4) = (uint32_t)brc_mode;
     *(uint32_t *)(br + 8) = cbr;
     *(uint32_t *)(br + 12) = min;
     *(uint32_t *)(br + 16) = max;
     int r = ioctl(gfd, IOC_SET_BITRATE, br);
-    printf("[SET_BITRATE:%d] ret=%d errno=%d cbr=%u min=%u max=%u\n",
-           stream_id, r, errno, cbr, min, max);
+    printf("[SET_BITRATE:%d] ret=%d errno=%d brc=%d cbr=%u min=%u max=%u\n",
+           stream_id, r, errno, brc_mode, cbr, min, max);
 }
 
-static void set_h264_config_stream(int stream_id, uint32_t cbr, uint32_t min, uint32_t max)
+static void set_h264_config_stream(int stream_id, int gop_n, int idr_interval,
+                                   int brc_mode, uint32_t cbr, uint32_t min,
+                                   uint32_t max)
 {
     uint8_t cfg[512];
     memset(cfg, 0, sizeof(cfg));
@@ -829,8 +882,8 @@ static void set_h264_config_stream(int stream_id, uint32_t cbr, uint32_t min, ui
     dump_bytes("[H264] before", cfg, 80);
 
     *(uint16_t *)(cfg + 44) = 1;      /* gopM */
-    *(uint16_t *)(cfg + 46) = 25;     /* gopN */
-    cfg[48] = 1;                      /* idrInterval: Sofia default */
+    *(uint16_t *)(cfg + 46) = (uint16_t)gop_n;
+    cfg[48] = (uint8_t)idr_interval;
     cfg[49] = 0;                      /* gopModel */
     cfg[50] = 4;                      /* internal field set by Sofia wrapper */
     cfg[54] = 0;                      /* GK SDK default: produces D1 stream_id 0 reliably */
@@ -838,12 +891,12 @@ static void set_h264_config_stream(int stream_id, uint32_t cbr, uint32_t min, ui
     cfg[110] = 0;                     /* reEncMode */
 
     ret = ioctl(gfd, IOC_SET_H264_CFG, cfg);
-    printf("[H264:%d] SET ret=%d errno=%d gop=%u/%u idr=%u profile=%u\n",
+    printf("[H264:%d] SET ret=%d errno=%d gop=%u/%u idr=%u profile=%u brc=%d\n",
            stream_id, ret, errno, *(uint16_t *)(cfg + 44),
-           *(uint16_t *)(cfg + 46), cfg[48], cfg[54]);
+           *(uint16_t *)(cfg + 46), cfg[48], cfg[54], brc_mode);
     dump_bytes("[H264] after", cfg, 80);
 
-    set_bitrate_stream(stream_id, cbr, min, max);
+    set_bitrate_stream(stream_id, brc_mode, cbr, min, max);
 }
 
 static void set_mjpeg_config_stream(GADI_SYS_HandleT handle, int stream_id, int quality)
@@ -905,6 +958,10 @@ struct video_bridge_options {
     int local_port;
     int payload_type;
     int bitrate_kbps;
+    int gop_n;
+    int idr_interval;
+    int brc_mode;
+    int rtsp_periodic_idr_ms;
     const char *dumpfile;
     long long dump_limit_bytes;
     int rtp_sink_fd;
@@ -949,6 +1006,10 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     int local_port;
     int payload_type;
     int bitrate_kbps;
+    int gop_n;
+    int idr_interval;
+    int brc_mode;
+    int rtsp_periodic_idr_ms;
     uint32_t main_cbr;
     uint32_t main_min;
     uint32_t main_max;
@@ -981,6 +1042,10 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     local_port = snapshot_mode ? 0 : opt->local_port;
     payload_type = snapshot_mode ? 0 : opt->payload_type;
     bitrate_kbps = opt->bitrate_kbps > 0 ? opt->bitrate_kbps : 4096;
+    gop_n = clamp_gop_n(opt->gop_n);
+    idr_interval = clamp_idr_interval(opt->idr_interval);
+    brc_mode = clamp_brc_mode(opt->brc_mode);
+    rtsp_periodic_idr_ms = clamp_rtsp_periodic_idr_ms(opt->rtsp_periodic_idr_ms);
     dumpfile = snapshot_mode ? NULL : opt->dumpfile;
     dump_limit_bytes = snapshot_mode ? 0 : opt->dump_limit_bytes;
     rtp_sink_fd = snapshot_mode ? -1 : opt->rtp_sink_fd;
@@ -1024,6 +1089,8 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
         printf("Payload type: %d\n", payload_type);
         printf("Target bitrate: %d kbps (cbr=%u min=%u max=%u)\n",
                bitrate_kbps, main_cbr, main_min, main_max);
+        printf("Encoder tuning: gop_n=%d idr_interval=%d brc_mode=%d rtsp_periodic_idr_ms=%d\n",
+               gop_n, idr_interval, brc_mode, rtsp_periodic_idr_ms);
     }
     if (dumpfile) printf("Debug dump: %s\n", dumpfile);
     if (rtp_sink_fd >= 0) printf("RTP sink fd: %d\n", rtp_sink_fd);
@@ -1168,16 +1235,17 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
         set_mjpeg_config_stream(venc_handle, 0, jpeg_quality);
     } else {
         set_encode_format_stream(0, 0, 688, 576, 25);
-        set_h264_config_stream(0, main_cbr, main_min, main_max);
+        set_h264_config_stream(0, gop_n, idr_interval, brc_mode,
+                               main_cbr, main_min, main_max);
     }
 
     set_frame_interval_stream(1);
     set_encode_format_stream(1, 1, 352, 300, 25);
-    set_h264_config_stream(1, 0x40000, 0x40000, 0x80000);
+    set_h264_config_stream(1, 25, 1, 0, 0x40000, 0x40000, 0x80000);
 
     set_frame_interval_stream(2);
     set_encode_format_stream(2, 2, 352, 288, 25);
-    set_h264_config_stream(2, 0x40000, 0x40000, 0x80000);
+    set_h264_config_stream(2, 25, 1, 0, 0x40000, 0x40000, 0x80000);
     printf("\n");
 
     err = gadi_vi_enable(vi_handle, 1);
@@ -1366,11 +1434,11 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
             }
             idrs++;
         }
-        if (rtp_sink_fd >= 0 && idrs > 0) {
+        if (rtp_sink_fd >= 0 && idrs > 0 && rtsp_periodic_idr_ms > 0) {
             long long now = now_ms();
             if (last_rtsp_idr_request_ms == 0) {
                 last_rtsp_idr_request_ms = now;
-            } else if (now - last_rtsp_idr_request_ms >= RTSP_IDR_INTERVAL_MS) {
+            } else if (now - last_rtsp_idr_request_ms >= rtsp_periodic_idr_ms) {
                 force_idr_stream0("rtsp-periodic");
                 last_rtsp_idr_request_ms = now;
             }

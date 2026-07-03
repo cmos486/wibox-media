@@ -37,6 +37,10 @@ void config_init_defaults(wibox_config_t* config) {
     config->video_rtp_port = 8002;
     config->video_payload_type = 96;
     config->video_bitrate_kbps = 4096;
+    config->video_gop_n = 25;
+    config->video_idr_interval = 1;
+    config->video_brc_mode = 0;
+    config->video_rtsp_periodic_idr_ms = 0;
     config->ring_snapshot_delay_ms = 2000;
     config->video_recording_enabled = 0;
     strcpy(config->video_recording_path, "/tmp/wibox-last-call.h264");
@@ -129,6 +133,14 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
         config->video_payload_type = atoi(value);
     } else if (strcmp(key, "video_bitrate_kbps") == 0) {
         config->video_bitrate_kbps = atoi(value);
+    } else if (strcmp(key, "video_gop_n") == 0) {
+        config->video_gop_n = atoi(value);
+    } else if (strcmp(key, "video_idr_interval") == 0) {
+        config->video_idr_interval = atoi(value);
+    } else if (strcmp(key, "video_brc_mode") == 0) {
+        config->video_brc_mode = atoi(value);
+    } else if (strcmp(key, "video_rtsp_periodic_idr_ms") == 0) {
+        config->video_rtsp_periodic_idr_ms = atoi(value);
     } else if (strcmp(key, "ring_snapshot_delay_ms") == 0) {
         config->ring_snapshot_delay_ms = atoi(value);
     } else if (strcmp(key, "video_recording_enabled") == 0) {
@@ -281,6 +293,10 @@ void config_print(const wibox_config_t* config) {
     printf("video_rtp_port = %d\n", config->video_rtp_port);
     printf("video_payload_type = %d\n", config->video_payload_type);
     printf("video_bitrate_kbps = %d\n", config->video_bitrate_kbps);
+    printf("video_gop_n = %d\n", config->video_gop_n);
+    printf("video_idr_interval = %d\n", config->video_idr_interval);
+    printf("video_brc_mode = %d\n", config->video_brc_mode);
+    printf("video_rtsp_periodic_idr_ms = %d\n", config->video_rtsp_periodic_idr_ms);
     printf("ring_snapshot_delay_ms = %d\n", config->ring_snapshot_delay_ms);
     printf("video_recording_enabled = %d\n", config->video_recording_enabled);
     printf("video_recording_path = %s\n", config->video_recording_path);
