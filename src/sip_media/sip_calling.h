@@ -87,6 +87,16 @@ void sip_calling_set_callbacks(sip_call_state_callback_t state_cb,
                               void* user_data);
 
 /**
+ * Update outgoing call setup timeout.
+ */
+void sip_calling_set_call_timeout(int timeout_seconds);
+
+/**
+ * Update local video SDP settings for future SIP offers/answers.
+ */
+void sip_calling_set_video_config(int local_video_rtp_port, int video_payload_type);
+
+/**
  * Initiate an outgoing call
  */
 pj_status_t sip_calling_make_call(void);

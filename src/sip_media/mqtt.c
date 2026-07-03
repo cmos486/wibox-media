@@ -39,6 +39,8 @@ typedef struct {
     char device_name[128];
     char local_ip[64];
     int video_enabled;
+    int video_bitrate_kbps;
+    int outgoing_call_timeout;
     int call_forward_enabled;
     int firmware_update_enabled;
     char firmware_update_repo[128];
@@ -280,7 +282,10 @@ static int mqtt_read_packet(unsigned char* type_flags, unsigned char* payload,
             if (socket_read_all(mqtt_state.sock, tmp, (size_t)chunk) < 0) return -1;
             left -= chunk;
         }
-        return -1;
+        printf("%s: ignored oversized inbound MQTT packet type=0x%02x len=%d\n",
+               MQTT_FILE, *type_flags, remaining);
+        *payload_len = 0;
+        return 0;
     }
 
     if (socket_read_all(mqtt_state.sock, payload, (size_t)remaining) < 0) {
@@ -308,6 +313,9 @@ static const char* mqtt_connack_reason(int code) {
         return "unknown";
     }
 }
+
+static int mqtt_publish_bytes(const char* topic, const unsigned char* payload,
+                              size_t payload_len, int retain);
 
 static int mqtt_connect_session(void) {
     unsigned char payload[1024];
@@ -367,20 +375,39 @@ static int mqtt_connect_session(void) {
 }
 
 static int mqtt_publish_raw(const char* topic, const char* payload, int retain) {
-    unsigned char packet[2300];
+    return mqtt_publish_bytes(topic, (const unsigned char*)payload,
+                              payload ? strlen(payload) : 0, retain);
+}
+
+static int mqtt_publish_bytes(const char* topic, const unsigned char* payload,
+                              size_t payload_len, int retain) {
+    unsigned char small_packet[2300];
+    unsigned char* packet = small_packet;
+    size_t packet_size;
     size_t pos = 0;
+    int rc;
 
     if (!mqtt_state.enabled || !mqtt_state.connected || !topic || !payload) {
         return -1;
     }
 
-    if (mqtt_append_str(packet, sizeof(packet), &pos, topic) < 0 ||
-        mqtt_append_bytes(packet, sizeof(packet), &pos,
-                          (const unsigned char*)payload, strlen(payload)) < 0) {
+    packet_size = 2 + strlen(topic) + payload_len;
+    if (packet_size > sizeof(small_packet)) {
+        packet = malloc(packet_size);
+        if (!packet) {
+            return -1;
+        }
+    }
+
+    if (mqtt_append_str(packet, packet_size, &pos, topic) < 0 ||
+        mqtt_append_bytes(packet, packet_size, &pos, payload, payload_len) < 0) {
+        if (packet != small_packet) free(packet);
         return -1;
     }
 
-    return mqtt_send_packet(retain ? 0x31 : 0x30, packet, pos);
+    rc = mqtt_send_packet(retain ? 0x31 : 0x30, packet, pos);
+    if (packet != small_packet) free(packet);
+    return rc;
 }
 
 static void topic_path(char* out, size_t out_size, const char* suffix) {
@@ -394,6 +421,100 @@ static void publish_suffix(const char* suffix, const char* payload, int retain) 
     }
     topic_path(topic, sizeof(topic), suffix);
     mqtt_publish_raw(topic, payload, retain);
+}
+
+static char base64_char(unsigned int v) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    return table[v & 0x3f];
+}
+
+static char* base64_encode_alloc(const unsigned char* data, size_t len, size_t* out_len) {
+    size_t encoded_len;
+    char* out;
+    size_t i;
+    size_t pos = 0;
+
+    if (!data) {
+        return NULL;
+    }
+    encoded_len = ((len + 2) / 3) * 4;
+    out = malloc(encoded_len + 1);
+    if (!out) {
+        return NULL;
+    }
+
+    for (i = 0; i < len; i += 3) {
+        unsigned int b0 = data[i];
+        unsigned int b1 = (i + 1 < len) ? data[i + 1] : 0;
+        unsigned int b2 = (i + 2 < len) ? data[i + 2] : 0;
+
+        out[pos++] = base64_char(b0 >> 2);
+        out[pos++] = base64_char(((b0 & 0x03) << 4) | (b1 >> 4));
+        out[pos++] = (i + 1 < len) ? base64_char(((b1 & 0x0f) << 2) | (b2 >> 6)) : '=';
+        out[pos++] = (i + 2 < len) ? base64_char(b2 & 0x3f) : '=';
+    }
+    out[pos] = '\0';
+    if (out_len) {
+        *out_len = pos;
+    }
+    return out;
+}
+
+int mqtt_publish_snapshot_file(const char* path) {
+    FILE* fp;
+    long file_size;
+    unsigned char* data;
+    char* encoded;
+    size_t encoded_len;
+    char topic[256];
+    int rc;
+
+    if (!mqtt_state.enabled || !mqtt_state.connected || !path) {
+        return -1;
+    }
+
+    fp = fopen(path, "rb");
+    if (!fp) {
+        printf("%s: snapshot open failed for %s: %s\n", MQTT_FILE, path, strerror(errno));
+        return -1;
+    }
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return -1;
+    }
+    file_size = ftell(fp);
+    if (file_size <= 0 || file_size > 1024 * 1024) {
+        printf("%s: snapshot size invalid: %ld\n", MQTT_FILE, file_size);
+        fclose(fp);
+        return -1;
+    }
+    rewind(fp);
+
+    data = malloc((size_t)file_size);
+    if (!data) {
+        fclose(fp);
+        return -1;
+    }
+    if (fread(data, 1, (size_t)file_size, fp) != (size_t)file_size) {
+        free(data);
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+
+    encoded = base64_encode_alloc(data, (size_t)file_size, &encoded_len);
+    free(data);
+    if (!encoded) {
+        return -1;
+    }
+
+    topic_path(topic, sizeof(topic), "snapshot/image");
+    rc = mqtt_publish_bytes(topic, (const unsigned char*)encoded, encoded_len, 1);
+    free(encoded);
+    printf("%s: published snapshot %ld bytes as %zu base64 bytes rc=%d\n",
+           MQTT_FILE, file_size, encoded_len, rc);
+    return rc;
 }
 
 static void clear_retained_topic(const char* topic) {
@@ -431,7 +552,7 @@ static void publish_sensor_config(const char* object_id, const char* name,
     char state_topic[256];
     char uid[192];
     char dev[512];
-    char payload[1536];
+    char payload[2048];
     char class_part[128] = "";
     char icon_part[128] = "";
 
@@ -451,6 +572,42 @@ static void publish_sensor_config(const char* object_id, const char* name,
              "{\"name\":\"%s\",\"unique_id\":\"%s\",\"state_topic\":\"%s\","
              "\"availability_topic\":\"%s\",%s%s%s}",
              name, uid, state_topic, mqtt_state.base_topic, class_part, icon_part, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_number_config(const char* object_id, const char* name,
+                                  const char* topic_suffix, int min, int max,
+                                  int step, const char* unit, const char* icon) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[2048];
+    char unit_part[96] = "";
+    char icon_part[96] = "";
+
+    discovery_topic(topic, sizeof(topic), "number", object_id);
+    topic_path(state_topic, sizeof(state_topic), topic_suffix);
+    snprintf(command_topic, sizeof(command_topic), "%s/%s/set",
+             mqtt_state.base_topic, topic_suffix);
+    unique_id(uid, sizeof(uid), object_id);
+    device_json(dev, sizeof(dev));
+
+    if (unit && unit[0]) {
+        snprintf(unit_part, sizeof(unit_part), "\"unit_of_measurement\":\"%s\",", unit);
+    }
+    if (icon && icon[0]) {
+        snprintf(icon_part, sizeof(icon_part), "\"icon\":\"mdi:%s\",", icon);
+    }
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"%s\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"min\":%d,\"max\":%d,\"step\":%d,\"mode\":\"slider\","
+             "\"retain\":true,\"availability_topic\":\"%s\",%s%s%s}",
+             name, uid, state_topic, command_topic, min, max, step,
+             mqtt_state.base_topic, unit_part, icon_part, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
 
@@ -491,6 +648,47 @@ static void publish_f1_button_config(void) {
              "\"command_topic\":\"%s\",\"payload_press\":\"PRESS\","
              "\"availability_topic\":\"%s\",\"icon\":\"mdi:electric-switch\",%s}",
              uid, command_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_snapshot_button_config(void) {
+    char topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "button", "take_snapshot");
+    topic_path(command_topic, sizeof(command_topic), "snapshot/take/set");
+    unique_id(uid, sizeof(uid), "take_snapshot");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Take Snapshot\",\"unique_id\":\"%s\","
+             "\"command_topic\":\"%s\",\"payload_press\":\"PRESS\","
+             "\"availability_topic\":\"%s\",\"icon\":\"mdi:camera\",%s}",
+             uid, command_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_snapshot_image_config(void) {
+    char topic[256];
+    char image_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "image", "snapshot");
+    topic_path(image_topic, sizeof(image_topic), "snapshot/image");
+    unique_id(uid, sizeof(uid), "snapshot");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Snapshot\",\"unique_id\":\"%s\","
+             "\"image_topic\":\"%s\",\"image_encoding\":\"b64\","
+             "\"content_type\":\"image/jpeg\",\"availability_topic\":\"%s\","
+             "\"icon\":\"mdi:image\",%s}",
+             uid, image_topic, mqtt_state.base_topic, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
 
@@ -594,7 +792,7 @@ static void publish_video_switch_config(void) {
              "{\"name\":\"Video Enabled\",\"unique_id\":\"%s\","
              "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
              "\"availability_topic\":\"%s\",\"payload_on\":\"ON\","
-             "\"payload_off\":\"OFF\",\"icon\":\"mdi:video\",%s}",
+             "\"payload_off\":\"OFF\",\"retain\":true,\"icon\":\"mdi:video\",%s}",
              uid, state_topic, command_topic, mqtt_state.base_topic, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
@@ -667,6 +865,10 @@ static void clear_legacy_entities(void) {
     discovery_topic(topic, sizeof(topic), "sensor", "last_unlock");
     clear_retained_topic(topic);
     topic_path(topic, sizeof(topic), "door/last_unlock");
+    clear_retained_topic(topic);
+    discovery_topic(topic, sizeof(topic), "sensor", "snapshot_status");
+    clear_retained_topic(topic);
+    topic_path(topic, sizeof(topic), "snapshot/status");
     clear_retained_topic(topic);
 }
 
@@ -834,6 +1036,8 @@ void mqtt_publish_discovery(void) {
     }
     publish_button_config();
     publish_f1_button_config();
+    publish_snapshot_button_config();
+    publish_snapshot_image_config();
     publish_sensor_config("media_state", "Media State", "media/state", "", "phone");
     publish_sensor_config("firmware_version", "Firmware Version", "firmware/version", "", "tag");
     publish_sensor_config("firmware_commit", "Firmware Commit", "firmware/commit", "", "source-commit");
@@ -842,6 +1046,10 @@ void mqtt_publish_discovery(void) {
     publish_unlock_binary_sensor_config();
     publish_sensor_config("wifi_rssi", "WiFi RSSI", "wifi/rssi", "signal_strength", "wifi");
     publish_video_switch_config();
+    publish_number_config("video_bitrate", "Video Bitrate", "video/bitrate_kbps",
+                          512, 4096, 256, "kbps", "video-high-definition");
+    publish_number_config("outgoing_call_timeout", "Outgoing Call Timeout",
+                          "call/timeout_seconds", 10, 120, 5, "s", "timer-outline");
     publish_call_forward_switch_config();
 }
 
@@ -872,7 +1080,22 @@ void mqtt_publish_video_active(int active) {
 }
 
 void mqtt_publish_video_enabled(int enabled) {
+    mqtt_state.video_enabled = enabled ? 1 : 0;
     publish_suffix("video/enabled", enabled ? "ON" : "OFF", 1);
+}
+
+void mqtt_publish_video_bitrate(int bitrate_kbps) {
+    char value[32];
+    mqtt_state.video_bitrate_kbps = bitrate_kbps;
+    snprintf(value, sizeof(value), "%d", bitrate_kbps);
+    publish_suffix("video/bitrate_kbps", value, 1);
+}
+
+void mqtt_publish_outgoing_call_timeout(int timeout_seconds) {
+    char value[32];
+    mqtt_state.outgoing_call_timeout = timeout_seconds;
+    snprintf(value, sizeof(value), "%d", timeout_seconds);
+    publish_suffix("call/timeout_seconds", value, 1);
 }
 
 void mqtt_publish_call_forward_enabled(int enabled) {
@@ -936,8 +1159,26 @@ static int payload_is_off(const char* payload) {
          strcasecmp(payload, "0") == 0);
 }
 
+static int parse_int_payload(const char* payload, int* value) {
+    char* end;
+    long parsed;
+
+    if (!payload || !value) {
+        return -1;
+    }
+    errno = 0;
+    parsed = strtol(payload, &end, 10);
+    while (end && *end && isspace((unsigned char)*end)) end++;
+    if (errno != 0 || !end || *end != '\0' || parsed < -2147483647L || parsed > 2147483647L) {
+        return -1;
+    }
+    *value = (int)parsed;
+    return 0;
+}
+
 static void handle_mqtt_message(const char* topic, const char* payload) {
     char expected[256];
+    int int_value;
 
     if (!topic || !payload) return;
 
@@ -972,12 +1213,39 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
         return;
     }
 
+    topic_path(expected, sizeof(expected), "snapshot/take/set");
+    if (strcmp(topic, expected) == 0) {
+        if (payload_is_on(payload) && mqtt_state.callbacks.take_snapshot) {
+            printf("%s: take snapshot command received\n", MQTT_FILE);
+            mqtt_state.callbacks.take_snapshot(mqtt_state.user_data);
+        }
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "video/enabled/set");
     if (strcmp(topic, expected) == 0) {
         if (payload_is_on(payload) && mqtt_state.callbacks.set_video_enabled) {
             mqtt_state.callbacks.set_video_enabled(1, mqtt_state.user_data);
         } else if (payload_is_off(payload) && mqtt_state.callbacks.set_video_enabled) {
             mqtt_state.callbacks.set_video_enabled(0, mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "video/bitrate_kbps/set");
+    if (strcmp(topic, expected) == 0) {
+        if (parse_int_payload(payload, &int_value) == 0 &&
+            mqtt_state.callbacks.set_video_bitrate) {
+            mqtt_state.callbacks.set_video_bitrate(int_value, mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "call/timeout_seconds/set");
+    if (strcmp(topic, expected) == 0) {
+        if (parse_int_payload(payload, &int_value) == 0 &&
+            mqtt_state.callbacks.set_outgoing_call_timeout) {
+            mqtt_state.callbacks.set_outgoing_call_timeout(int_value, mqtt_state.user_data);
         }
         return;
     }
@@ -1133,6 +1401,8 @@ static void* mqtt_thread_func(void* arg) {
         }
         publish_suffix("door/unlocked", "OFF", 1);
         mqtt_publish_video_enabled(mqtt_state.video_enabled);
+        mqtt_publish_video_bitrate(mqtt_state.video_bitrate_kbps);
+        mqtt_publish_outgoing_call_timeout(mqtt_state.outgoing_call_timeout);
         mqtt_publish_call_forward_enabled(mqtt_state.call_forward_enabled);
         mqtt_publish_wifi_stats();
 
@@ -1188,6 +1458,8 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
     strncpy(mqtt_state.ha_prefix, app_config->mqtt_homeassistant_prefix, sizeof(mqtt_state.ha_prefix) - 1);
     strncpy(mqtt_state.local_ip, local_ip ? local_ip : "0.0.0.0", sizeof(mqtt_state.local_ip) - 1);
     mqtt_state.video_enabled = app_config->video_enabled;
+    mqtt_state.video_bitrate_kbps = app_config->video_bitrate_kbps;
+    mqtt_state.outgoing_call_timeout = app_config->outgoing_call_timeout;
     mqtt_state.call_forward_enabled = app_config->serial_listener_enabled ? 1 : 0;
     mqtt_state.firmware_update_enabled = app_config->firmware_update_enabled;
     strncpy(mqtt_state.firmware_update_repo, app_config->firmware_update_repo,

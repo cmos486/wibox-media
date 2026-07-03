@@ -6,7 +6,10 @@
 typedef struct {
     void (*open_door)(void* user_data);
     void (*trigger_f1)(void* user_data);
+    void (*take_snapshot)(void* user_data);
     void (*set_video_enabled)(int enabled, void* user_data);
+    void (*set_video_bitrate)(int bitrate_kbps, void* user_data);
+    void (*set_outgoing_call_timeout)(int timeout_seconds, void* user_data);
     void (*set_call_forward_enabled)(int enabled, void* user_data);
 } mqtt_callbacks_t;
 
@@ -24,10 +27,13 @@ void mqtt_publish_call_active(int active);
 void mqtt_publish_sip_call_active(int active);
 void mqtt_publish_video_active(int active);
 void mqtt_publish_video_enabled(int enabled);
+void mqtt_publish_video_bitrate(int bitrate_kbps);
+void mqtt_publish_outgoing_call_timeout(int timeout_seconds);
 void mqtt_publish_call_forward_enabled(int enabled);
 void mqtt_publish_media_state(const char* state);
 void mqtt_publish_firmware_version(void);
 void mqtt_publish_door_unlocked_pulse(void);
 void mqtt_publish_wifi_stats(void);
+int mqtt_publish_snapshot_file(const char* path);
 
 #endif

@@ -33,7 +33,7 @@ void config_init_defaults(wibox_config_t* config) {
     config->outgoing_call_timeout = 60;
     config->sip_port = 5060;
     config->rtp_port = 8000;
-    config->video_enabled = 1;
+    config->video_enabled = 0;
     config->video_rtp_port = 8002;
     config->video_payload_type = 96;
     config->video_bitrate_kbps = 4096;

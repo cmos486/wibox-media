@@ -24,7 +24,7 @@ outgoing_call_timeout=60
 sip_port=5060
 rtp_port=8000
 
-video_enabled=1
+video_enabled=0
 video_rtp_port=8002
 video_payload_type=96
 video_bitrate_kbps=4096
@@ -68,7 +68,9 @@ DTMF:  telephone-event/8000
 
 When a SIP call is established, the daemon sends `START_CALL` to the intercom
 MCU, starts direct GADI audio, and starts the D1 video worker if video was
-negotiated and `video_enabled=1`.
+negotiated and `video_enabled=1`. The factory default is `video_enabled=0`, so
+fresh installations start audio-only until video is enabled from Home Assistant,
+retained MQTT, or `/mnt/mtd/sip_media.conf`.
 
 On hangup or failure, it stops media and sends `STOP_CALL` when needed.
 
@@ -128,7 +130,10 @@ Commands:
 ```text
 wibox/<hostname>/door/open/set = PRESS
 wibox/<hostname>/f1/trigger/set = PRESS
+wibox/<hostname>/snapshot/take/set = PRESS
 wibox/<hostname>/video/enabled/set = ON|OFF
+wibox/<hostname>/video/bitrate_kbps/set = 512..4096
+wibox/<hostname>/call/timeout_seconds/set = 10..120
 wibox/<hostname>/call_forward/enabled/set = ON|OFF
 wibox/<hostname>/firmware/update/check/set = PRESS
 wibox/<hostname>/firmware/update/install/set = PRESS
@@ -139,7 +144,10 @@ State topics:
 ```text
 wibox/<hostname>/media/state
 wibox/<hostname>/door/unlocked
+wibox/<hostname>/snapshot/image
 wibox/<hostname>/video/enabled
+wibox/<hostname>/video/bitrate_kbps
+wibox/<hostname>/call/timeout_seconds
 wibox/<hostname>/call_forward/enabled
 wibox/<hostname>/wifi/rssi
 wibox/<hostname>/firmware/version
@@ -159,6 +167,24 @@ established
 ```
 
 `door/unlocked` is a short pulse: `ON` then `OFF`.
+
+`snapshot/take/set` captures one D1 JPEG frame from the local camera path and
+publishes it to the MQTT Image entity at `snapshot/image`. The image payload is
+base64-encoded JPEG (`image_encoding=b64`) so Home Assistant can display the
+latest doorphone snapshot directly.
+
+The `Video Enabled`, `Video Bitrate` and `Outgoing Call Timeout` entities are
+runtime configuration overrides. Without retained MQTT commands or file
+overrides, the built-in defaults are `video_enabled=0`,
+`video_bitrate_kbps=4096` and `outgoing_call_timeout=60`. The boot default still
+comes from `/mnt/mtd/sip_media.conf` when a key is present, but Home Assistant
+publishes these command topics as retained MQTT messages, so the last selected
+value is replayed after a daemon or WiBox reboot and takes priority over the file
+value. The daemon republishes the accepted/clamped state separately.
+
+Video resolution is not exposed over MQTT because only D1 `688x576` is currently
+validated. If more modes are added, they should be exposed as a closed MQTT
+select, never as a free-form text or number input.
 
 `f1/trigger/set` sends a short F1 auxiliary-function pulse. On Fermax systems
 this is not the main door opener; it is intended for installations wired with an

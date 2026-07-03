@@ -92,8 +92,11 @@ def broker(published):
                     if not sent_commands and topic == "wibox/test":
                         sent_commands = True
                         conn.sendall(publish("wibox/test/video/enabled/set", "OFF"))
+                        conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "2048"))
+                        conn.sendall(publish("wibox/test/call/timeout_seconds/set", "45"))
                         conn.sendall(publish("wibox/test/call_forward/enabled/set", "OFF"))
                         conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS"))
+                        conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS"))
                         conn.sendall(publish("wibox/test/door/open/set", "PRESS"))
                 elif typ == 0xC0:
                     conn.sendall(packet(0xD0))
@@ -166,8 +169,32 @@ def main():
     if not any(topic.endswith("_f1_function/config") for topic, _ in published):
         print("missing F1 function Home Assistant discovery publish", file=sys.stderr)
         return 1
+    if not any(topic.endswith("_take_snapshot/config") for topic, _ in published):
+        print("missing snapshot button Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if not any(topic.endswith("_snapshot/config") and '"image_encoding":"b64"' in payload
+               for topic, payload in published):
+        print("missing snapshot image Home Assistant discovery publish", file=sys.stderr)
+        return 1
     if ("wibox/test/call_forward/enabled", "ON") not in published:
         print("missing retained call forward initial state", file=sys.stderr)
+        return 1
+    if not any(topic.endswith("_video_bitrate/config") and '"mode":"slider"' in payload
+               for topic, payload in published):
+        print("missing video bitrate Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if not any(topic.endswith("_outgoing_call_timeout/config") and '"mode":"slider"' in payload
+               for topic, payload in published):
+        print("missing outgoing call timeout Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/video/enabled", "OFF") not in published:
+        print("missing default video disabled state publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/video/bitrate_kbps", "4096") not in published:
+        print("missing default video bitrate state publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/call/timeout_seconds", "60") not in published:
+        print("missing default outgoing call timeout state publish", file=sys.stderr)
         return 1
     if ("homeassistant/sensor/wibox_test_last_ring/config", "") not in published:
         print("missing retained last ring discovery cleanup", file=sys.stderr)

@@ -108,7 +108,7 @@ specific reason.
   `ringing` or `established`.
 - Older MQTT entities such as `last_ring`, `last_unlock`, `call_active`,
   `sip_call_active` and `video_active` should remain cleared from discovery.
-- `video_enabled=1` defaults to video-capable calls; set it to `0` for audio-only
+- `video_enabled=0` defaults to audio-only calls; enable it for video-capable
   installations.
 
 ## D1 Video Notes

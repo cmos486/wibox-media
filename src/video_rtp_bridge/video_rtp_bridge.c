@@ -12,6 +12,7 @@
  *   3. Start the call path:
  *      printf "\xfb\x14\x01\x20" > /dev/ttySGK1
  *   4. Run: video_rtp_bridge <remote_ip> <remote_port> [local_port] [payload_type]
+ *      or: video_rtp_bridge --snapshot <output.jpg> [quality]
  *   5. Stop the call path:
  *      printf "\xfb\x14\x00\x1f" > /dev/ttySGK1
  */
@@ -516,14 +517,15 @@ static void set_frame_interval_stream(int stream_id)
     printf("[SET_FRAME_INTERVAL:%d] ret=%d errno=%d\n", stream_id, r, errno);
 }
 
-static void set_encode_format_stream(int stream_id, int channel_id,
-                                     uint16_t width, uint16_t height,
-                                     uint32_t fps)
+static void set_encode_format_stream_type(int stream_id, int channel_id,
+                                          int encode_type,
+                                          uint16_t width, uint16_t height,
+                                          uint32_t fps)
 {
     uint8_t fmt[128];
     memset(fmt, 0, sizeof(fmt));
     *(uint32_t *)(fmt + 0) = 1U << stream_id;
-    fmt[4] = 1;                      /* encodeType: H264 */
+    fmt[4] = (uint8_t)encode_type;   /* 1: H264, 2: MJPEG */
     fmt[5] = (uint8_t)channel_id;
     fmt[6] = 0;                      /* flipRotate */
     *(uint16_t *)(fmt + 8) = width;
@@ -534,8 +536,15 @@ static void set_encode_format_stream(int stream_id, int channel_id,
     fmt[20] = 0;                     /* keepAspRat */
 
     int r = ioctl(gfd, IOC_SET_ENCODE_FORMAT, fmt);
-    printf("[SET_ENCODE_FORMAT:%d] ret=%d errno=%d ch=%d %ux%u fps=%u\n",
-           stream_id, r, errno, channel_id, width, height, fps);
+    printf("[SET_ENCODE_FORMAT:%d] ret=%d errno=%d type=%d ch=%d %ux%u fps=%u\n",
+           stream_id, r, errno, encode_type, channel_id, width, height, fps);
+}
+
+static void set_encode_format_stream(int stream_id, int channel_id,
+                                     uint16_t width, uint16_t height,
+                                     uint32_t fps)
+{
+    set_encode_format_stream_type(stream_id, channel_id, 1, width, height, fps);
 }
 
 static void set_bitrate_stream(int stream_id, uint32_t cbr, uint32_t min, uint32_t max)
@@ -581,6 +590,23 @@ static void set_h264_config_stream(int stream_id, uint32_t cbr, uint32_t min, ui
     set_bitrate_stream(stream_id, cbr, min, max);
 }
 
+static void set_mjpeg_config_stream(GADI_SYS_HandleT handle, int stream_id, int quality)
+{
+    GADI_VENC_MjpegConfigT cfg;
+    GADI_ERR err;
+
+    if (quality < 1) quality = 1;
+    if (quality > 100) quality = 100;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.streamId = (GADI_U32)stream_id;
+    cfg.chromaFormat = 1; /* YUV 420 */
+    cfg.quality = (GADI_U8)quality;
+
+    err = gadi_venc_set_mjpeg_config(handle, &cfg);
+    printf("[MJPEG:%d] SET quality=%d ret=%d\n", stream_id, quality, err);
+}
+
 static void set_h264_qp_stream(int stream_id)
 {
     uint8_t qp[32];
@@ -611,7 +637,24 @@ static void query_stream0(const char *tag)
            tag, r, errno, q[0], q[1], q[2], q[3]);
 }
 
-int main(int argc, char **argv)
+enum video_bridge_mode {
+    VIDEO_BRIDGE_MODE_RTP = 0,
+    VIDEO_BRIDGE_MODE_SNAPSHOT = 1,
+};
+
+struct video_bridge_options {
+    enum video_bridge_mode mode;
+    const char *remote_ip;
+    int remote_port;
+    int local_port;
+    int payload_type;
+    int bitrate_kbps;
+    const char *dumpfile;
+    const char *snapshot_path;
+    int jpeg_quality;
+};
+
+static int video_bridge_run_options(const struct video_bridge_options *opt)
 {
     const char *remote_ip;
     int remote_port;
@@ -621,34 +664,39 @@ int main(int argc, char **argv)
     uint32_t main_cbr;
     uint32_t main_min;
     uint32_t main_max;
+    int snapshot_mode = 0;
+    const char *snapshot_path = NULL;
+    int jpeg_quality = 90;
     const char *dumpfile;
     FILE *fout = NULL;
     struct rtp_sender rtp;
     GADI_ERR err;
     int ret;
+    int exit_code = 0;
     long long worker_start_ms = now_ms();
 
-    if (argc < 3) {
-        fprintf(stderr,
-                "Usage: %s <remote_ip> <remote_video_port> [local_video_port] [payload_type] [bitrate_kbps] [dump.h264]\n",
-                argv[0]);
+    if (!opt) {
         return 1;
     }
 
-    remote_ip = argv[1];
-    remote_port = atoi(argv[2]);
-    local_port = argc > 3 ? atoi(argv[3]) : 8002;
-    payload_type = argc > 4 ? atoi(argv[4]) : 96;
-    bitrate_kbps = 4096;
-    dumpfile = NULL;
-    if (argc > 5) {
-        if (arg_is_integer(argv[5])) {
-            bitrate_kbps = atoi(argv[5]);
-            dumpfile = argc > 6 ? argv[6] : NULL;
-        } else {
-            dumpfile = argv[5];
-        }
+    memset(&rtp, 0, sizeof(rtp));
+    rtp.fd = -1;
+
+    snapshot_mode = opt->mode == VIDEO_BRIDGE_MODE_SNAPSHOT;
+    snapshot_path = opt->snapshot_path;
+    jpeg_quality = opt->jpeg_quality > 0 ? opt->jpeg_quality : 90;
+    remote_ip = snapshot_mode ? "snapshot" : opt->remote_ip;
+    remote_port = snapshot_mode ? 0 : opt->remote_port;
+    local_port = snapshot_mode ? 0 : opt->local_port;
+    payload_type = snapshot_mode ? 0 : opt->payload_type;
+    bitrate_kbps = opt->bitrate_kbps > 0 ? opt->bitrate_kbps : 4096;
+    dumpfile = snapshot_mode ? NULL : opt->dumpfile;
+
+    if (snapshot_mode && (!snapshot_path || !snapshot_path[0])) {
+        fprintf(stderr, "Missing snapshot output path\n");
+        return 1;
     }
+
     bitrate_kbps = clamp_bitrate_kbps(bitrate_kbps);
     main_cbr = (uint32_t)bitrate_kbps * 1024U;
     main_min = (uint32_t)(bitrate_kbps * 2 / 3) * 1024U;
@@ -669,20 +717,33 @@ int main(int argc, char **argv)
     signal(SIGINT, on_stop);
 
     printf("=== WiBox D1 Video RTP Bridge ===\n");
-    printf("Remote: %s:%d\n", remote_ip, remote_port);
-    printf("Local RTP port: %d\n", local_port);
-    printf("Payload type: %d\n", payload_type);
-    printf("Target bitrate: %d kbps (cbr=%u min=%u max=%u)\n",
-           bitrate_kbps, main_cbr, main_min, main_max);
+    if (snapshot_mode) {
+        printf("Mode: snapshot\n");
+        printf("Snapshot output: %s\n", snapshot_path);
+        printf("JPEG quality: %d\n", jpeg_quality);
+    } else {
+        printf("Remote: %s:%d\n", remote_ip, remote_port);
+        printf("Local RTP port: %d\n", local_port);
+        printf("Payload type: %d\n", payload_type);
+        printf("Target bitrate: %d kbps (cbr=%u min=%u max=%u)\n",
+               bitrate_kbps, main_cbr, main_min, main_max);
+    }
     if (dumpfile) printf("Debug dump: %s\n", dumpfile);
     printf("\n");
 
-    if (remote_port <= 0 || local_port <= 0 || payload_type <= 0 || payload_type > 127) {
+    if (!snapshot_mode && (remote_port <= 0 || local_port <= 0 || payload_type <= 0 || payload_type > 127)) {
         fprintf(stderr, "Invalid RTP arguments\n");
         return 1;
     }
-    if (rtp_sender_open(&rtp, remote_ip, remote_port, local_port, payload_type) < 0) {
+    if (!snapshot_mode && rtp_sender_open(&rtp, remote_ip, remote_port, local_port, payload_type) < 0) {
         return 1;
+    }
+    if (snapshot_mode) {
+        fout = fopen(snapshot_path, "wb");
+        if (!fout) {
+            perror("fopen snapshot");
+            return 1;
+        }
     }
     if (dumpfile) {
         fout = fopen(dumpfile, "wb");
@@ -774,22 +835,28 @@ int main(int argc, char **argv)
     if (ret < 0) {
         fprintf(stderr, "FATAL: SET_SRCBUF_FORMAT failed.\n");
         fprintf(stderr, "Did Sofia run for 25+s? sys_state needs VI init.\n");
+        exit_code = 1;
         goto out;
     }
 
     /* ── SET_SRCBUF_TYPE: channel 0 = H264 ── */
     printf("[CONFIG] SET_SRCBUF_TYPE...\n");
     {
-        uint32_t types[4] = {1, 1, 1, 0};
+        uint32_t types[4] = {snapshot_mode ? 2U : 1U, 1, 1, 0};
         ret = ioctl(gfd, IOC_SET_SRCBUF_TYPE, types);
         printf("[CONFIG] SET_SRCBUF_TYPE ret=%d\n\n", ret);
     }
 
-    /* ── H264 config: Sofia configures streams 0, 1 and 2 before start. ── */
-    printf("[CONFIG] Streams 0/1/2 encode + H264 defaults...\n");
+    /* ── Stream config. Sofia configures streams 0, 1 and 2 before start. ── */
+    printf("[CONFIG] Streams 0/1/2 encode defaults...\n");
     set_frame_interval_stream(0);
-    set_encode_format_stream(0, 0, 688, 576, 25);
-    set_h264_config_stream(0, main_cbr, main_min, main_max);
+    if (snapshot_mode) {
+        set_encode_format_stream_type(0, 0, 2, 688, 576, 5);
+        set_mjpeg_config_stream(venc_handle, 0, jpeg_quality);
+    } else {
+        set_encode_format_stream(0, 0, 688, 576, 25);
+        set_h264_config_stream(0, main_cbr, main_min, main_max);
+    }
 
     set_frame_interval_stream(1);
     set_encode_format_stream(1, 1, 352, 300, 25);
@@ -832,7 +899,7 @@ int main(int argc, char **argv)
     usleep(20000);
 
     /* ── CAPTURE LOOP ── */
-    printf("[CAPTURE] Starting RTP stream\n");
+    printf("[CAPTURE] Starting %s capture\n", snapshot_mode ? "snapshot" : "RTP");
 
     struct nal_cache sps_cache = {0};
     struct nal_cache pps_cache = {0};
@@ -865,6 +932,24 @@ int main(int argc, char **argv)
 
         uint8_t *data = st.addr;
         uint32_t  sz  = st.size;
+
+        if (snapshot_mode) {
+            if (st.stream_id != 0) { usleep(1000); continue; }
+            printf("  [snapshot pkt %03d] sid=%u pic=%u sz=%u bytes=%02x %02x %02x %02x\n",
+                   i, st.stream_id, st.pic_type, sz,
+                   sz > 0 ? data[0] : 0, sz > 1 ? data[1] : 0,
+                   sz > 2 ? data[2] : 0, sz > 3 ? data[3] : 0);
+            if (sz >= 4 && data[0] == 0xff && data[1] == 0xd8) {
+                fwrite(data, 1, sz, fout);
+                fflush(fout);
+                total_bytes += sz;
+                frames = 1;
+                printf("[SNAPSHOT] wrote %u bytes to %s\n", sz, snapshot_path);
+                break;
+            }
+            usleep(5000);
+            continue;
+        }
 
         int nal = scan_annexb_nals(data, sz, &scan,
                                    st.stream_id == 0 ? &sps_cache : NULL,
@@ -964,7 +1049,10 @@ int main(int argc, char **argv)
     if (fout) fclose(fout);
     free(sps_cache.data); free(pps_cache.data);
 
-    if (frames == 0) {
+    if (frames == 0 && snapshot_mode) {
+        fprintf(stderr, "\nNO SNAPSHOT CAPTURED!\n");
+        exit_code = 1;
+    } else if (frames == 0) {
         fprintf(stderr, "\nNO FRAMES CAPTURED!\n");
         fprintf(stderr, "Possible causes:\n");
         fprintf(stderr, "  1. Stream ID not 0 (try 0xFF or 2)\n");
@@ -977,5 +1065,46 @@ stop:
 out:
     if (gfd >= 0) close(gfd);
     if (rtp.fd >= 0) close(rtp.fd);
-    return 0;
+    return exit_code;
+}
+
+int main(int argc, char **argv)
+{
+    struct video_bridge_options opt;
+
+    memset(&opt, 0, sizeof(opt));
+    opt.mode = VIDEO_BRIDGE_MODE_RTP;
+    opt.local_port = 8002;
+    opt.payload_type = 96;
+    opt.bitrate_kbps = 4096;
+    opt.jpeg_quality = 90;
+
+    if (argc >= 3 && strcmp(argv[1], "--snapshot") == 0) {
+        opt.mode = VIDEO_BRIDGE_MODE_SNAPSHOT;
+        opt.snapshot_path = argv[2];
+        if (argc > 3) {
+            opt.jpeg_quality = atoi(argv[3]);
+        }
+    } else if (argc >= 3) {
+        opt.remote_ip = argv[1];
+        opt.remote_port = atoi(argv[2]);
+        if (argc > 3) opt.local_port = atoi(argv[3]);
+        if (argc > 4) opt.payload_type = atoi(argv[4]);
+        if (argc > 5) {
+            if (arg_is_integer(argv[5])) {
+                opt.bitrate_kbps = atoi(argv[5]);
+                opt.dumpfile = argc > 6 ? argv[6] : NULL;
+            } else {
+                opt.dumpfile = argv[5];
+            }
+        }
+    } else {
+        fprintf(stderr,
+                "Usage: %s <remote_ip> <remote_video_port> [local_video_port] [payload_type] [bitrate_kbps] [dump.h264]\n"
+                "       %s --snapshot <output.jpg> [quality]\n",
+                argv[0], argv[0]);
+        return 1;
+    }
+
+    return video_bridge_run_options(&opt);
 }

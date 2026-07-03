@@ -8,6 +8,7 @@ The firmware provides:
 
 - SIP audio calls with PCMA RTP;
 - optional H.264 D1 video from the main encoder;
+- on-demand D1 JPEG snapshots published to Home Assistant;
 - DTMF `#`, MQTT door unlock and optional Fermax F1 auxiliary relay trigger;
 - Home Assistant discovery over MQTT;
 - Prometheus metrics;
@@ -64,8 +65,8 @@ Newer versions should also be treated as serial-only until proven otherwise.
 3. After first boot, configure `/mnt/mtd/sip_media.conf` for SIP, MQTT,
    optional video, Prometheus and firmware updates.
 4. Add the discovered MQTT device in Home Assistant. Normal daily control is
-   through Home Assistant: media state, open door, video enable/disable and
-   firmware update buttons.
+   through Home Assistant: media state, open door, take snapshot,
+   video enable/disable and firmware update buttons.
 5. If real doorbell calls do not arrive but manual `DING` tests work, check the
    call-forward LED and PB2/VDS address programming in
    [Doorbell Call Troubleshooting](docs/getting_started.md#10-doorbell-call-troubleshooting).
@@ -89,15 +90,16 @@ mqtt_enabled=1
 mqtt_host=192.168.0.203
 mqtt_user=wibox
 mqtt_pass=change-me
-video_enabled=1
-video_bitrate_kbps=4096
 firmware_update_enabled=1
 prometheus_enabled=1
 ```
 
-Set `video_enabled=0` for audio-only installations.
-Increase `video_bitrate_kbps` if the client and WiFi link can handle more
-video bandwidth; the runtime clamps it to a practical range for the D1 encoder.
+Fresh installations default to `video_enabled=0`, `video_bitrate_kbps=4096` and
+`outgoing_call_timeout=60`. Those keys can be set in the file as boot defaults,
+but Home Assistant controls publish retained MQTT overrides that take priority
+after startup. Video resolution is not exposed as a free-form setting; the proven
+capture mode is D1 `688x576`, and any future resolution control must be a closed
+MQTT select.
 
 ## Runtime Model
 

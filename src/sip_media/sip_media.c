@@ -30,6 +30,8 @@
 #define THIS_FILE "wibox-media-daemon"
 #define CONFIG_FILE "/mnt/mtd/sip_media.conf"
 #define LEGACY_CONFIG_FILE "/mnt/mtd/sip.conf"
+#define SNAPSHOT_PATH "/tmp/wibox-snapshot.jpg"
+#define SNAPSHOT_LOG_PATH "/tmp/wibox-snapshot-worker.log"
 
 #define RTP_PAYLOAD_DTMF 101    // Common DTMF payload type
 #define DTMF_EVENT_0     0
@@ -57,6 +59,8 @@ static pj_bool_t call_active = PJ_FALSE; // Is there an active audio session?
 static pj_mutex_t *call_active_mutex; // Mutex to protect call_active
 static struct sockaddr_in remote_rtp_addr; // Where to send audio packets
 static int current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
+static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int snapshot_active = 0;
 
 // Configuration
 static wibox_config_t app_config;
@@ -117,7 +121,11 @@ static void stop_video_session(void);
 static void unlock_door(const char* source);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
+static void mqtt_take_snapshot_callback(void* user_data);
+static void* snapshot_thread_func(void* arg);
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data);
+static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data);
+static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
 
 // Module to handle incoming requests and responses
@@ -692,12 +700,145 @@ static void mqtt_trigger_f1_callback(void* user_data) {
     }
 }
 
+static void mqtt_take_snapshot_callback(void* user_data) {
+    pthread_t thread;
+    (void)user_data;
+
+    pthread_mutex_lock(&snapshot_mutex);
+    if (snapshot_active) {
+        pthread_mutex_unlock(&snapshot_mutex);
+        printf("MQTT snapshot ignored - capture already active\n");
+        return;
+    }
+    snapshot_active = 1;
+    pthread_mutex_unlock(&snapshot_mutex);
+
+    if (pthread_create(&thread, NULL, snapshot_thread_func, NULL) != 0) {
+        pthread_mutex_lock(&snapshot_mutex);
+        snapshot_active = 0;
+        pthread_mutex_unlock(&snapshot_mutex);
+        printf("Failed to create snapshot thread\n");
+        return;
+    }
+    pthread_detach(thread);
+}
+
+static void* snapshot_thread_func(void* arg) {
+    int started_panel_context = 0;
+    int status = 1;
+    pid_t pid;
+    int child_status = 0;
+    pj_thread_desc desc;
+    pj_thread_t *thread;
+    pj_status_t pj_status;
+
+    (void)arg;
+
+    pj_status = pj_thread_register("snapshot_thread", desc, &thread);
+    if (pj_status != PJ_SUCCESS) {
+        printf("Failed to register snapshot thread with PJLIB: %d\n", pj_status);
+        goto done;
+    }
+
+    unlink(SNAPSHOT_PATH);
+
+    if (video_bridge_pid > 0) {
+        printf("Snapshot ignored - video worker already running pid=%d\n", video_bridge_pid);
+        goto done;
+    }
+
+    if (!get_call_active_status()) {
+        printf("Snapshot starting temporary panel context\n");
+        intercom_send_command(INTERCOM_CMD_START_CALL);
+        mqtt_publish_call_active(1);
+        prometheus_set_call_active(1);
+        usleep(500000);
+        started_panel_context = 1;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        printf("Snapshot fork failed: %s\n", strerror(errno));
+        goto stop_context;
+    }
+    if (pid == 0) {
+        int log_fd = open(SNAPSHOT_LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (log_fd >= 0) {
+            dup2(log_fd, STDOUT_FILENO);
+            dup2(log_fd, STDERR_FILENO);
+            close(log_fd);
+        }
+        _exit(video_snapshot_capture(SNAPSHOT_PATH, 90));
+    }
+
+    if (waitpid(pid, &child_status, 0) == pid &&
+        WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0 &&
+        access(SNAPSHOT_PATH, R_OK) == 0) {
+        if (mqtt_publish_snapshot_file(SNAPSHOT_PATH) == 0) {
+            status = 0;
+        }
+    } else {
+        printf("Snapshot worker failed status=0x%x\n", child_status);
+    }
+
+stop_context:
+    if (started_panel_context) {
+        intercom_send_command(INTERCOM_CMD_STOP_CALL);
+        mqtt_publish_call_active(0);
+        prometheus_set_call_active(0);
+    }
+
+done:
+    pthread_mutex_lock(&snapshot_mutex);
+    snapshot_active = 0;
+    pthread_mutex_unlock(&snapshot_mutex);
+    printf("Snapshot complete status=%d\n", status);
+    return NULL;
+}
+
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data) {
     (void)user_data;
     app_config.video_enabled = enabled ? 1 : 0;
     printf("MQTT video_enabled set to %d\n", app_config.video_enabled);
+    sip_calling_set_video_config(app_config.video_enabled ? app_config.video_rtp_port : 0,
+                                 app_config.video_payload_type);
     mqtt_publish_video_enabled(app_config.video_enabled);
     prometheus_set_video_enabled(app_config.video_enabled);
+}
+
+static int clamp_video_bitrate(int bitrate_kbps) {
+    int rounded;
+    if (bitrate_kbps < 512) return 512;
+    if (bitrate_kbps > 4096) return 4096;
+    rounded = ((bitrate_kbps + 128) / 256) * 256;
+    if (rounded < 512) return 512;
+    if (rounded > 4096) return 4096;
+    return rounded;
+}
+
+static int clamp_outgoing_call_timeout(int timeout_seconds) {
+    int rounded;
+    if (timeout_seconds < 10) return 10;
+    if (timeout_seconds > 120) return 120;
+    rounded = ((timeout_seconds + 2) / 5) * 5;
+    if (rounded < 10) return 10;
+    if (rounded > 120) return 120;
+    return rounded;
+}
+
+static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data) {
+    (void)user_data;
+    app_config.video_bitrate_kbps = clamp_video_bitrate(bitrate_kbps);
+    printf("MQTT video_bitrate_kbps set to %d\n", app_config.video_bitrate_kbps);
+    mqtt_publish_video_bitrate(app_config.video_bitrate_kbps);
+}
+
+static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data) {
+    (void)user_data;
+    app_config.outgoing_call_timeout = clamp_outgoing_call_timeout(timeout_seconds);
+    printf("MQTT outgoing_call_timeout set to %d\n", app_config.outgoing_call_timeout);
+    sip_calling_set_call_timeout(app_config.outgoing_call_timeout);
+    mqtt_publish_outgoing_call_timeout(app_config.outgoing_call_timeout);
 }
 
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data) {
@@ -1642,7 +1783,10 @@ int main(int argc, char *argv[]) {
     memset(&mqtt_callbacks, 0, sizeof(mqtt_callbacks));
     mqtt_callbacks.open_door = mqtt_open_door_callback;
     mqtt_callbacks.trigger_f1 = mqtt_trigger_f1_callback;
+    mqtt_callbacks.take_snapshot = mqtt_take_snapshot_callback;
     mqtt_callbacks.set_video_enabled = mqtt_set_video_enabled_callback;
+    mqtt_callbacks.set_video_bitrate = mqtt_set_video_bitrate_callback;
+    mqtt_callbacks.set_outgoing_call_timeout = mqtt_set_outgoing_call_timeout_callback;
     mqtt_callbacks.set_call_forward_enabled = mqtt_set_call_forward_enabled_callback;
     mqtt_init(&app_config, local_ip, &mqtt_callbacks, NULL);
     if (app_config.prometheus_enabled && prometheus_start(app_config.prometheus_port) < 0) {

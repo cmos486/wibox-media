@@ -69,8 +69,8 @@ if ! grep -q "Sofia_temp.sh" "${ROOT}/run.sh"; then
   echo "[!] run.sh does not contain Sofia warmup" >&2
   exit 8
 fi
-if ! grep -q "^video_enabled=1" "${ROOT}/etc/sip_media.conf.default"; then
-  echo "[!] default config does not enable video by default" >&2
+if ! grep -q "^video_enabled=0" "${ROOT}/etc/sip_media.conf.default"; then
+  echo "[!] default config does not disable video by default" >&2
   exit 9
 fi
 if ! grep -q "^prometheus_enabled=1" "${ROOT}/etc/sip_media.conf.default"; then

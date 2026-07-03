@@ -8,7 +8,10 @@
 typedef struct {
     int open_count;
     int f1_count;
+    int snapshot_count;
     int video_value;
+    int video_bitrate;
+    int call_timeout;
     int call_forward_value;
 } harness_state_t;
 
@@ -24,10 +27,28 @@ static void on_trigger_f1(void* user_data) {
     printf("CALLBACK trigger_f1=%d\n", state->f1_count);
 }
 
+static void on_take_snapshot(void* user_data) {
+    harness_state_t* state = (harness_state_t*)user_data;
+    state->snapshot_count++;
+    printf("CALLBACK take_snapshot=%d\n", state->snapshot_count);
+}
+
 static void on_video_enabled(int enabled, void* user_data) {
     harness_state_t* state = (harness_state_t*)user_data;
     state->video_value = enabled;
     printf("CALLBACK video_enabled=%d\n", enabled);
+}
+
+static void on_video_bitrate(int bitrate_kbps, void* user_data) {
+    harness_state_t* state = (harness_state_t*)user_data;
+    state->video_bitrate = bitrate_kbps;
+    printf("CALLBACK video_bitrate=%d\n", bitrate_kbps);
+}
+
+static void on_call_timeout(int timeout_seconds, void* user_data) {
+    harness_state_t* state = (harness_state_t*)user_data;
+    state->call_timeout = timeout_seconds;
+    printf("CALLBACK call_timeout=%d\n", timeout_seconds);
 }
 
 static void on_call_forward_enabled(int enabled, void* user_data) {
@@ -45,6 +66,8 @@ int main(void) {
     memset(&callbacks, 0, sizeof(callbacks));
     memset(&state, 0, sizeof(state));
     state.video_value = -1;
+    state.video_bitrate = -1;
+    state.call_timeout = -1;
     state.call_forward_value = -1;
 
     config_init_defaults(&config);
@@ -56,12 +79,14 @@ int main(void) {
     strcpy(config.mqtt_device_id, "test");
     strcpy(config.mqtt_device_name, "WiBox Test");
     strcpy(config.mqtt_homeassistant_prefix, "homeassistant");
-    config.video_enabled = 1;
     config.firmware_update_enabled = 0;
 
     callbacks.open_door = on_open_door;
     callbacks.trigger_f1 = on_trigger_f1;
+    callbacks.take_snapshot = on_take_snapshot;
     callbacks.set_video_enabled = on_video_enabled;
+    callbacks.set_video_bitrate = on_video_bitrate;
+    callbacks.set_outgoing_call_timeout = on_call_timeout;
     callbacks.set_call_forward_enabled = on_call_forward_enabled;
 
     if (mqtt_init(&config, "127.0.0.1", &callbacks, &state) != 0) {
@@ -72,15 +97,22 @@ int main(void) {
     }
 
     for (i = 0; i < 80 && (state.open_count == 0 || state.f1_count == 0 ||
+                           state.snapshot_count == 0 ||
                            state.video_value != 0 ||
+                           state.video_bitrate != 2048 ||
+                           state.call_timeout != 45 ||
                            state.call_forward_value != 0); i++) {
         usleep(100000);
     }
 
     mqtt_publish_door_unlocked_pulse();
     mqtt_stop();
-    printf("RESULT open=%d f1=%d video=%d call_forward=%d\n",
-           state.open_count, state.f1_count, state.video_value, state.call_forward_value);
-    return (state.open_count == 1 && state.f1_count == 1 && state.video_value == 0 &&
+    printf("RESULT open=%d f1=%d snapshot=%d video=%d bitrate=%d timeout=%d call_forward=%d\n",
+           state.open_count, state.f1_count, state.snapshot_count,
+           state.video_value, state.video_bitrate, state.call_timeout,
+           state.call_forward_value);
+    return (state.open_count == 1 && state.f1_count == 1 && state.snapshot_count == 1 &&
+            state.video_value == 0 && state.video_bitrate == 2048 &&
+            state.call_timeout == 45 &&
             state.call_forward_value == 0) ? 0 : 1;
 }

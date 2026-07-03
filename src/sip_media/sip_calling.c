@@ -62,6 +62,22 @@ void sip_calling_set_callbacks(sip_call_state_callback_t state_cb,
     callback_user_data = user_data;
 }
 
+void sip_calling_set_call_timeout(int timeout_seconds) {
+    if (timeout_seconds < 10) timeout_seconds = 10;
+    if (timeout_seconds > 120) timeout_seconds = 120;
+    config.call_timeout_seconds = timeout_seconds;
+    printf("sip_calling: outgoing call timeout set to %d seconds\n", config.call_timeout_seconds);
+}
+
+void sip_calling_set_video_config(int local_video_rtp_port, int video_payload_type) {
+    config.local_video_rtp_port = local_video_rtp_port > 0 ? local_video_rtp_port : 0;
+    if (video_payload_type > 0 && video_payload_type < 128) {
+        config.video_payload_type = video_payload_type;
+    }
+    printf("sip_calling: video config set to port=%d payload=%d\n",
+           config.local_video_rtp_port, config.video_payload_type);
+}
+
 static void set_call_state(sip_call_state_t new_state) {
     sip_call_state_t old_state = current_session.state;
 

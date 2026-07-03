@@ -166,9 +166,6 @@ Important options:
 
 ```ini
 outgoing_call_target=sip:1000@192.168.0.31:5060
-outgoing_call_timeout=60
-video_enabled=1
-video_bitrate_kbps=4096
 mqtt_enabled=1
 mqtt_host=192.168.0.203
 mqtt_user=wibox
@@ -177,9 +174,18 @@ firmware_update_enabled=1
 prometheus_enabled=1
 ```
 
-Set `video_enabled=0` for audio-only doorphones.
-Raise `video_bitrate_kbps` for less blocky video if your WiFi and SIP client
-can handle the extra RTP bandwidth.
+Fresh installations default to audio-only: `video_enabled=0`. Enable video from
+Home Assistant when the doorphone has a camera path. Raise `video_bitrate_kbps`
+for less blocky video if your WiFi and SIP client can handle the extra RTP
+bandwidth.
+
+Without retained MQTT commands or file overrides, the built-in defaults are
+`video_enabled=0`, `video_bitrate_kbps=4096` and `outgoing_call_timeout=60`.
+These keys may be kept in the config file as boot defaults, but the Home
+Assistant entities publish retained MQTT command values. Those retained values
+are replayed after reboot and take priority over the file. Resolution is
+intentionally not configurable yet; D1 `688x576` is the only validated video
+mode.
 
 Reboot after editing persistent config:
 
@@ -192,11 +198,13 @@ reboot
 When MQTT is configured, the daemon publishes Home Assistant discovery for:
 
 - `Open Door` button;
+- `Take Snapshot` button and `Snapshot` image;
 - `Media State` sensor: `idle`, `ringing`, `established`;
 - firmware version, commit and build timestamp sensors;
 - `Door Unlocked` pulse binary sensor;
 - `WiFi RSSI` sensor;
 - `Video Enabled` switch;
+- `Video Bitrate` and `Outgoing Call Timeout` controls;
 - `Call Forward Enabled` switch;
 - firmware update available/version sensors;
 - firmware update refresh/install buttons.

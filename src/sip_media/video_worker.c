@@ -10,28 +10,31 @@ int video_worker_run(const char* remote_ip, int remote_port,
                      int local_port, int payload_type,
                      int bitrate_kbps,
                      const char* dumpfile) {
-    char remote_port_arg[16];
-    char local_port_arg[16];
-    char payload_type_arg[16];
-    char bitrate_arg[16];
-    char* argv[7];
-    int argc = 6;
+    struct video_bridge_options opt;
 
-    snprintf(remote_port_arg, sizeof(remote_port_arg), "%d", remote_port);
-    snprintf(local_port_arg, sizeof(local_port_arg), "%d", local_port);
-    snprintf(payload_type_arg, sizeof(payload_type_arg), "%d", payload_type);
-    snprintf(bitrate_arg, sizeof(bitrate_arg), "%d", bitrate_kbps);
+    memset(&opt, 0, sizeof(opt));
+    opt.mode = VIDEO_BRIDGE_MODE_RTP;
+    opt.remote_ip = remote_ip;
+    opt.remote_port = remote_port;
+    opt.local_port = local_port;
+    opt.payload_type = payload_type;
+    opt.bitrate_kbps = bitrate_kbps;
+    opt.dumpfile = dumpfile;
 
-    argv[0] = "wibox-media-daemon-video";
-    argv[1] = (char*)remote_ip;
-    argv[2] = remote_port_arg;
-    argv[3] = local_port_arg;
-    argv[4] = payload_type_arg;
-    argv[5] = bitrate_arg;
-    argv[6] = (char*)dumpfile;
-    if (dumpfile) {
-        argc = 7;
+    return video_bridge_run_options(&opt);
+}
+
+int video_snapshot_capture(const char* output_path, int quality) {
+    struct video_bridge_options opt;
+
+    if (!output_path || !output_path[0]) {
+        return 1;
     }
 
-    return video_bridge_main(argc, argv);
+    memset(&opt, 0, sizeof(opt));
+    opt.mode = VIDEO_BRIDGE_MODE_SNAPSHOT;
+    opt.snapshot_path = output_path;
+    opt.jpeg_quality = quality;
+
+    return video_bridge_run_options(&opt);
 }
