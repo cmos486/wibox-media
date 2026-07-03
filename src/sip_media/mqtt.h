@@ -10,6 +10,7 @@ typedef struct {
     void (*set_video_enabled)(int enabled, void* user_data);
     void (*set_video_bitrate)(int bitrate_kbps, void* user_data);
     void (*set_outgoing_call_timeout)(int timeout_seconds, void* user_data);
+    void (*set_ring_snapshot_delay)(int delay_ms, void* user_data);
     void (*set_call_forward_enabled)(int enabled, void* user_data);
 } mqtt_callbacks_t;
 
@@ -29,6 +30,7 @@ void mqtt_publish_video_active(int active);
 void mqtt_publish_video_enabled(int enabled);
 void mqtt_publish_video_bitrate(int bitrate_kbps);
 void mqtt_publish_outgoing_call_timeout(int timeout_seconds);
+void mqtt_publish_ring_snapshot_delay(int delay_ms);
 void mqtt_publish_call_forward_enabled(int enabled);
 void mqtt_publish_media_state(const char* state);
 void mqtt_publish_firmware_version(void);

@@ -177,15 +177,16 @@ prometheus_enabled=1
 Fresh installations default to audio-only: `video_enabled=0`. Enable video from
 Home Assistant when the doorphone has a camera path. Raise `video_bitrate_kbps`
 for less blocky video if your WiFi and SIP client can handle the extra RTP
-bandwidth.
+bandwidth. `ring_snapshot_delay_ms` controls how long the daemon waits after a
+physical ring before taking the automatic snapshot.
 
 Without retained MQTT commands or file overrides, the built-in defaults are
-`video_enabled=0`, `video_bitrate_kbps=4096` and `outgoing_call_timeout=60`.
-These keys may be kept in the config file as boot defaults, but the Home
-Assistant entities publish retained MQTT command values. Those retained values
-are replayed after reboot and take priority over the file. Resolution is
-intentionally not configurable yet; D1 `688x576` is the only validated video
-mode.
+`video_enabled=0`, `video_bitrate_kbps=4096`, `outgoing_call_timeout=60` and
+`ring_snapshot_delay_ms=2000`. These keys may be kept in the config file as boot
+defaults, but the Home Assistant entities publish retained MQTT command values.
+Those retained values are replayed after reboot and take priority over the file.
+Resolution is intentionally not configurable yet; D1 `688x576` is the only
+validated video mode.
 
 Reboot after editing persistent config:
 

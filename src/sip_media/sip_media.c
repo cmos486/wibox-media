@@ -32,6 +32,9 @@
 #define LEGACY_CONFIG_FILE "/mnt/mtd/sip.conf"
 #define SNAPSHOT_PATH "/tmp/wibox-snapshot.jpg"
 #define SNAPSHOT_LOG_PATH "/tmp/wibox-snapshot-worker.log"
+#define RING_SNAPSHOT_DELAY_MIN_MS 0
+#define RING_SNAPSHOT_DELAY_MAX_MS 5000
+#define RING_SNAPSHOT_DELAY_STEP_MS 500
 
 #define RTP_PAYLOAD_DTMF 101    // Common DTMF payload type
 #define DTMF_EVENT_0     0
@@ -61,6 +64,12 @@ static struct sockaddr_in remote_rtp_addr; // Where to send audio packets
 static int current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int snapshot_active = 0;
+
+typedef struct {
+    int open_panel_context;
+    unsigned int delay_ms;
+    const char* reason;
+} snapshot_request_t;
 
 // Configuration
 static wibox_config_t app_config;
@@ -122,11 +131,15 @@ static void unlock_door(const char* source);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
 static void mqtt_take_snapshot_callback(void* user_data);
+static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
+                                  const char* reason);
 static void* snapshot_thread_func(void* arg);
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data);
 static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data);
+static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
+static int clamp_ring_snapshot_delay(int delay_ms);
 
 // Module to handle incoming requests and responses
 static pjsip_module mod_wibox = {
@@ -701,32 +714,55 @@ static void mqtt_trigger_f1_callback(void* user_data) {
 }
 
 static void mqtt_take_snapshot_callback(void* user_data) {
-    pthread_t thread;
     (void)user_data;
+    start_snapshot_capture(1, 0, "manual");
+}
+
+static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
+                                  const char* reason) {
+    pthread_t thread;
+    snapshot_request_t* request;
 
     pthread_mutex_lock(&snapshot_mutex);
     if (snapshot_active) {
         pthread_mutex_unlock(&snapshot_mutex);
         mqtt_publish_snapshot_available(0);
-        printf("MQTT snapshot ignored - capture already active\n");
-        return;
+        printf("Snapshot ignored for %s - capture already active\n",
+               reason ? reason : "unknown");
+        return -1;
     }
     snapshot_active = 1;
     pthread_mutex_unlock(&snapshot_mutex);
     mqtt_publish_snapshot_available(0);
 
-    if (pthread_create(&thread, NULL, snapshot_thread_func, NULL) != 0) {
+    request = calloc(1, sizeof(*request));
+    if (!request) {
         pthread_mutex_lock(&snapshot_mutex);
         snapshot_active = 0;
         pthread_mutex_unlock(&snapshot_mutex);
         mqtt_publish_snapshot_available(1);
+        printf("Failed to allocate snapshot request\n");
+        return -1;
+    }
+    request->open_panel_context = open_panel_context ? 1 : 0;
+    request->delay_ms = delay_ms;
+    request->reason = reason ? reason : "unknown";
+
+    if (pthread_create(&thread, NULL, snapshot_thread_func, request) != 0) {
+        pthread_mutex_lock(&snapshot_mutex);
+        snapshot_active = 0;
+        pthread_mutex_unlock(&snapshot_mutex);
+        mqtt_publish_snapshot_available(1);
+        free(request);
         printf("Failed to create snapshot thread\n");
-        return;
+        return -1;
     }
     pthread_detach(thread);
+    return 0;
 }
 
 static void* snapshot_thread_func(void* arg) {
+    snapshot_request_t request;
     int started_panel_context = 0;
     int status = 1;
     pid_t pid;
@@ -735,12 +771,24 @@ static void* snapshot_thread_func(void* arg) {
     pj_thread_t *thread;
     pj_status_t pj_status;
 
-    (void)arg;
+    request.open_panel_context = 1;
+    request.delay_ms = 0;
+    request.reason = "manual";
+    if (arg) {
+        request = *(snapshot_request_t*)arg;
+        free(arg);
+    }
 
     pj_status = pj_thread_register("snapshot_thread", desc, &thread);
     if (pj_status != PJ_SUCCESS) {
         printf("Failed to register snapshot thread with PJLIB: %d\n", pj_status);
         goto done;
+    }
+
+    if (request.delay_ms > 0) {
+        printf("Snapshot %s waiting %u ms before capture\n",
+               request.reason ? request.reason : "unknown", request.delay_ms);
+        usleep(request.delay_ms * 1000);
     }
 
     unlink(SNAPSHOT_PATH);
@@ -751,12 +799,17 @@ static void* snapshot_thread_func(void* arg) {
     }
 
     if (!get_call_active_status()) {
-        printf("Snapshot starting temporary panel context\n");
-        intercom_send_command(INTERCOM_CMD_START_CALL);
-        mqtt_publish_call_active(1);
-        prometheus_set_call_active(1);
-        usleep(500000);
-        started_panel_context = 1;
+        if (request.open_panel_context) {
+            printf("Snapshot starting temporary panel context\n");
+            intercom_send_command(INTERCOM_CMD_START_CALL);
+            mqtt_publish_call_active(1);
+            prometheus_set_call_active(1);
+            usleep(500000);
+            started_panel_context = 1;
+        } else {
+            printf("Snapshot %s capturing without temporary panel context\n",
+                   request.reason ? request.reason : "unknown");
+        }
     }
 
     pid = fork();
@@ -830,6 +883,17 @@ static int clamp_outgoing_call_timeout(int timeout_seconds) {
     return rounded;
 }
 
+static int clamp_ring_snapshot_delay(int delay_ms) {
+    int rounded;
+    if (delay_ms < RING_SNAPSHOT_DELAY_MIN_MS) return RING_SNAPSHOT_DELAY_MIN_MS;
+    if (delay_ms > RING_SNAPSHOT_DELAY_MAX_MS) return RING_SNAPSHOT_DELAY_MAX_MS;
+    rounded = ((delay_ms + (RING_SNAPSHOT_DELAY_STEP_MS / 2)) /
+               RING_SNAPSHOT_DELAY_STEP_MS) * RING_SNAPSHOT_DELAY_STEP_MS;
+    if (rounded < RING_SNAPSHOT_DELAY_MIN_MS) return RING_SNAPSHOT_DELAY_MIN_MS;
+    if (rounded > RING_SNAPSHOT_DELAY_MAX_MS) return RING_SNAPSHOT_DELAY_MAX_MS;
+    return rounded;
+}
+
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data) {
     (void)user_data;
     app_config.video_bitrate_kbps = clamp_video_bitrate(bitrate_kbps);
@@ -843,6 +907,13 @@ static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* u
     printf("MQTT outgoing_call_timeout set to %d\n", app_config.outgoing_call_timeout);
     sip_calling_set_call_timeout(app_config.outgoing_call_timeout);
     mqtt_publish_outgoing_call_timeout(app_config.outgoing_call_timeout);
+}
+
+static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data) {
+    (void)user_data;
+    app_config.ring_snapshot_delay_ms = clamp_ring_snapshot_delay(delay_ms);
+    printf("MQTT ring_snapshot_delay_ms set to %d\n", app_config.ring_snapshot_delay_ms);
+    mqtt_publish_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
 }
 
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data) {
@@ -926,6 +997,9 @@ static void handle_ding_trigger(const char* source) {
     mqtt_publish_media_state("ringing");
     prometheus_set_ringing(1);
     prometheus_inc_ring();
+    if (source && strcmp(source, "serial alarm") == 0) {
+        start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring");
+    }
 
     PJ_LOG(3,(THIS_FILE, "Making outgoing call due to %s", source ? source : "DING"));
     status = sip_calling_make_call();
@@ -1777,6 +1851,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    app_config.ring_snapshot_delay_ms = clamp_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
+
     // Print loaded configuration
     config_print(&app_config);
 
@@ -1791,6 +1867,7 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.set_video_enabled = mqtt_set_video_enabled_callback;
     mqtt_callbacks.set_video_bitrate = mqtt_set_video_bitrate_callback;
     mqtt_callbacks.set_outgoing_call_timeout = mqtt_set_outgoing_call_timeout_callback;
+    mqtt_callbacks.set_ring_snapshot_delay = mqtt_set_ring_snapshot_delay_callback;
     mqtt_callbacks.set_call_forward_enabled = mqtt_set_call_forward_enabled_callback;
     mqtt_init(&app_config, local_ip, &mqtt_callbacks, NULL);
     if (app_config.prometheus_enabled && prometheus_start(app_config.prometheus_port) < 0) {

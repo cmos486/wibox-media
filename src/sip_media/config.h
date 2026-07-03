@@ -12,6 +12,7 @@ typedef struct {
     int video_rtp_port;
     int video_payload_type;
     int video_bitrate_kbps;
+    int ring_snapshot_delay_ms;
 
     // Pipe Configuration
     char sip_listen_pipe[256];

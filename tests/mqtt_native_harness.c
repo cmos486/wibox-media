@@ -12,6 +12,7 @@ typedef struct {
     int video_value;
     int video_bitrate;
     int call_timeout;
+    int ring_snapshot_delay;
     int call_forward_value;
 } harness_state_t;
 
@@ -51,6 +52,12 @@ static void on_call_timeout(int timeout_seconds, void* user_data) {
     printf("CALLBACK call_timeout=%d\n", timeout_seconds);
 }
 
+static void on_ring_snapshot_delay(int delay_ms, void* user_data) {
+    harness_state_t* state = (harness_state_t*)user_data;
+    state->ring_snapshot_delay = delay_ms;
+    printf("CALLBACK ring_snapshot_delay=%d\n", delay_ms);
+}
+
 static void on_call_forward_enabled(int enabled, void* user_data) {
     harness_state_t* state = (harness_state_t*)user_data;
     state->call_forward_value = enabled;
@@ -68,6 +75,7 @@ int main(void) {
     state.video_value = -1;
     state.video_bitrate = -1;
     state.call_timeout = -1;
+    state.ring_snapshot_delay = -1;
     state.call_forward_value = -1;
 
     config_init_defaults(&config);
@@ -87,6 +95,7 @@ int main(void) {
     callbacks.set_video_enabled = on_video_enabled;
     callbacks.set_video_bitrate = on_video_bitrate;
     callbacks.set_outgoing_call_timeout = on_call_timeout;
+    callbacks.set_ring_snapshot_delay = on_ring_snapshot_delay;
     callbacks.set_call_forward_enabled = on_call_forward_enabled;
 
     if (mqtt_init(&config, "127.0.0.1", &callbacks, &state) != 0) {
@@ -101,18 +110,19 @@ int main(void) {
                            state.video_value != 0 ||
                            state.video_bitrate != 2048 ||
                            state.call_timeout != 45 ||
+                           state.ring_snapshot_delay != 1500 ||
                            state.call_forward_value != 0); i++) {
         usleep(100000);
     }
 
     mqtt_publish_door_unlocked_pulse();
     mqtt_stop();
-    printf("RESULT open=%d f1=%d snapshot=%d video=%d bitrate=%d timeout=%d call_forward=%d\n",
+    printf("RESULT open=%d f1=%d snapshot=%d video=%d bitrate=%d timeout=%d ring_snapshot_delay=%d call_forward=%d\n",
            state.open_count, state.f1_count, state.snapshot_count,
            state.video_value, state.video_bitrate, state.call_timeout,
-           state.call_forward_value);
+           state.ring_snapshot_delay, state.call_forward_value);
     return (state.open_count == 1 && state.f1_count == 1 && state.snapshot_count == 1 &&
             state.video_value == 0 && state.video_bitrate == 2048 &&
-            state.call_timeout == 45 &&
+            state.call_timeout == 45 && state.ring_snapshot_delay == 1500 &&
             state.call_forward_value == 0) ? 0 : 1;
 }

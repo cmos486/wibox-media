@@ -94,6 +94,7 @@ def broker(published):
                         conn.sendall(publish("wibox/test/video/enabled/set", "OFF"))
                         conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "2048"))
                         conn.sendall(publish("wibox/test/call/timeout_seconds/set", "45"))
+                        conn.sendall(publish("wibox/test/snapshot/ring_delay_ms/set", "1500"))
                         conn.sendall(publish("wibox/test/call_forward/enabled/set", "OFF"))
                         conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS"))
                         conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS"))
@@ -195,6 +196,10 @@ def main():
                for topic, payload in published):
         print("missing outgoing call timeout Home Assistant discovery publish", file=sys.stderr)
         return 1
+    if not any(topic.endswith("_ring_snapshot_delay/config") and '"mode":"slider"' in payload
+               for topic, payload in published):
+        print("missing ring snapshot delay Home Assistant discovery publish", file=sys.stderr)
+        return 1
     if ("wibox/test/video/enabled", "OFF") not in published:
         print("missing default video disabled state publish", file=sys.stderr)
         return 1
@@ -203,6 +208,9 @@ def main():
         return 1
     if ("wibox/test/call/timeout_seconds", "60") not in published:
         print("missing default outgoing call timeout state publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/snapshot/ring_delay_ms", "2000") not in published:
+        print("missing default ring snapshot delay state publish", file=sys.stderr)
         return 1
     if ("homeassistant/sensor/wibox_test_last_ring/config", "") not in published:
         print("missing retained last ring discovery cleanup", file=sys.stderr)

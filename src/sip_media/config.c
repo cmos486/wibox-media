@@ -37,6 +37,7 @@ void config_init_defaults(wibox_config_t* config) {
     config->video_rtp_port = 8002;
     config->video_payload_type = 96;
     config->video_bitrate_kbps = 4096;
+    config->ring_snapshot_delay_ms = 2000;
 
     // Pipe Configuration
     strcpy(config->sip_listen_pipe, "/tmp/pipe_sip");
@@ -121,6 +122,8 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
         config->video_payload_type = atoi(value);
     } else if (strcmp(key, "video_bitrate_kbps") == 0) {
         config->video_bitrate_kbps = atoi(value);
+    } else if (strcmp(key, "ring_snapshot_delay_ms") == 0) {
+        config->ring_snapshot_delay_ms = atoi(value);
     } else if (strcmp(key, "video_bridge_path") == 0) {
         return 0; /* legacy standalone video bridge config, ignored */
     } else if (strcmp(key, "audio_ai_pipe") == 0) {
@@ -254,6 +257,7 @@ void config_print(const wibox_config_t* config) {
     printf("video_rtp_port = %d\n", config->video_rtp_port);
     printf("video_payload_type = %d\n", config->video_payload_type);
     printf("video_bitrate_kbps = %d\n", config->video_bitrate_kbps);
+    printf("ring_snapshot_delay_ms = %d\n", config->ring_snapshot_delay_ms);
     printf("sip_listen_pipe = %s\n", config->sip_listen_pipe);
     printf("ding_message = %s\n", config->ding_message);
     printf("serial_listener_enabled = %d\n", config->serial_listener_enabled);

@@ -94,12 +94,12 @@ firmware_update_enabled=1
 prometheus_enabled=1
 ```
 
-Fresh installations default to `video_enabled=0`, `video_bitrate_kbps=4096` and
-`outgoing_call_timeout=60`. Those keys can be set in the file as boot defaults,
-but Home Assistant controls publish retained MQTT overrides that take priority
-after startup. Video resolution is not exposed as a free-form setting; the proven
-capture mode is D1 `688x576`, and any future resolution control must be a closed
-MQTT select.
+Fresh installations default to `video_enabled=0`, `video_bitrate_kbps=4096`,
+`outgoing_call_timeout=60` and `ring_snapshot_delay_ms=2000`. Those keys can be
+set in the file as boot defaults, but Home Assistant controls publish retained
+MQTT overrides that take priority after startup. Video resolution is not exposed
+as a free-form setting; the proven capture mode is D1 `688x576`, and any future
+resolution control must be a closed MQTT select.
 
 ## Runtime Model
 

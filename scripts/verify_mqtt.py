@@ -190,6 +190,39 @@ def assert_command_config(seen, component, object_id, expected_command_topic,
     return config
 
 
+def assert_number_config(seen, object_id, expected_state_topic, expected_command_topic,
+                         expected_min=None, expected_max=None, expected_step=None,
+                         expected_unit=None, expected_icon=None):
+    topic = f"{MQTT_HA_PREFIX}/number/{HA_ID}_{object_id}/config"
+    payload = assert_present(seen, topic)
+    try:
+        config = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"invalid JSON for {topic}: {exc}") from exc
+
+    if config.get("state_topic") != expected_state_topic:
+        raise AssertionError(
+            f"{topic} state_topic={config.get('state_topic')!r}, expected {expected_state_topic!r}"
+        )
+    if config.get("command_topic") != expected_command_topic:
+        raise AssertionError(
+            f"{topic} command_topic={config.get('command_topic')!r}, expected {expected_command_topic!r}"
+        )
+    if expected_min is not None and config.get("min") != expected_min:
+        raise AssertionError(f"{topic} min={config.get('min')!r}, expected {expected_min!r}")
+    if expected_max is not None and config.get("max") != expected_max:
+        raise AssertionError(f"{topic} max={config.get('max')!r}, expected {expected_max!r}")
+    if expected_step is not None and config.get("step") != expected_step:
+        raise AssertionError(f"{topic} step={config.get('step')!r}, expected {expected_step!r}")
+    if expected_unit is not None and config.get("unit_of_measurement") != expected_unit:
+        raise AssertionError(
+            f"{topic} unit={config.get('unit_of_measurement')!r}, expected {expected_unit!r}"
+        )
+    if expected_icon is not None and config.get("icon") != expected_icon:
+        raise AssertionError(f"{topic} icon={config.get('icon')!r}, expected {expected_icon!r}")
+    return config
+
+
 def assert_absent(seen, topic):
     payload = seen.get(topic)
     if payload not in (None, ""):
@@ -205,6 +238,7 @@ def main():
         f"{MQTT_BASE_TOPIC}/firmware/build_timestamp",
         f"{MQTT_BASE_TOPIC}/wifi/rssi",
         f"{MQTT_BASE_TOPIC}/video/enabled",
+        f"{MQTT_BASE_TOPIC}/snapshot/ring_delay_ms",
         f"{MQTT_BASE_TOPIC}/firmware/update/install/availability",
         f"{MQTT_BASE_TOPIC}/firmware/update/available",
         f"{MQTT_BASE_TOPIC}/firmware/update/version",
@@ -219,6 +253,7 @@ def main():
         f"{MQTT_HA_PREFIX}/sensor/{HA_ID}_firmware_update_version/config",
         f"{MQTT_HA_PREFIX}/binary_sensor/{HA_ID}_door_unlocked/config",
         f"{MQTT_HA_PREFIX}/switch/{HA_ID}_video_enabled/config",
+        f"{MQTT_HA_PREFIX}/number/{HA_ID}_ring_snapshot_delay/config",
         f"{MQTT_HA_PREFIX}/sensor/{HA_ID}_wifi_rssi/config",
         f"{MQTT_HA_PREFIX}/binary_sensor/{HA_ID}_ringing/config",
         f"{MQTT_HA_PREFIX}/binary_sensor/{HA_ID}_call_active/config",
@@ -244,6 +279,7 @@ def main():
     firmware_build_timestamp = assert_present(seen, f"{MQTT_BASE_TOPIC}/firmware/build_timestamp")
     wifi_rssi = assert_present(seen, f"{MQTT_BASE_TOPIC}/wifi/rssi")
     video_enabled = assert_present(seen, f"{MQTT_BASE_TOPIC}/video/enabled")
+    ring_snapshot_delay = assert_present(seen, f"{MQTT_BASE_TOPIC}/snapshot/ring_delay_ms")
     firmware_update_install_availability = assert_present(
         seen, f"{MQTT_BASE_TOPIC}/firmware/update/install/availability"
     )
@@ -279,6 +315,16 @@ def main():
                   expected_icon="mdi:lock-open")
     assert_config(seen, "switch", "video_enabled", f"{MQTT_BASE_TOPIC}/video/enabled",
                   expected_icon="mdi:video")
+    assert_number_config(
+        seen, "ring_snapshot_delay",
+        f"{MQTT_BASE_TOPIC}/snapshot/ring_delay_ms",
+        f"{MQTT_BASE_TOPIC}/snapshot/ring_delay_ms/set",
+        expected_min=0,
+        expected_max=5000,
+        expected_step=500,
+        expected_unit="ms",
+        expected_icon="mdi:timer-outline"
+    )
     assert_config(seen, "sensor", "wifi_rssi", f"{MQTT_BASE_TOPIC}/wifi/rssi",
                   expected_device_class="signal_strength", expected_icon="mdi:wifi")
 
@@ -293,6 +339,7 @@ def main():
     print(f"    media/state={media_state} firmware/version={firmware_version} "
           f"firmware/commit={firmware_commit} firmware/build_timestamp={firmware_build_timestamp} "
           f"wifi/rssi={wifi_rssi} video/enabled={video_enabled} "
+          f"snapshot/ring_delay_ms={ring_snapshot_delay} "
           f"firmware/update/install/availability={firmware_update_install_availability}")
 
 

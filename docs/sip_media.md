@@ -131,6 +131,7 @@ Commands:
 wibox/<hostname>/door/open/set = PRESS
 wibox/<hostname>/f1/trigger/set = PRESS
 wibox/<hostname>/snapshot/take/set = PRESS
+wibox/<hostname>/snapshot/ring_delay_ms/set = 0..5000
 wibox/<hostname>/video/enabled/set = ON|OFF
 wibox/<hostname>/video/bitrate_kbps/set = 512..4096
 wibox/<hostname>/call/timeout_seconds/set = 10..120
@@ -146,6 +147,7 @@ wibox/<hostname>/media/state
 wibox/<hostname>/door/unlocked
 wibox/<hostname>/snapshot/image
 wibox/<hostname>/snapshot/take/availability
+wibox/<hostname>/snapshot/ring_delay_ms
 wibox/<hostname>/video/enabled
 wibox/<hostname>/video/bitrate_kbps
 wibox/<hostname>/call/timeout_seconds
@@ -176,14 +178,22 @@ latest doorphone snapshot directly. `snapshot/take/availability` is `offline`
 while a capture is running, so Home Assistant disables the `Take Snapshot`
 button until the worker completes.
 
-The `Video Enabled`, `Video Bitrate` and `Outgoing Call Timeout` entities are
-runtime configuration overrides. Without retained MQTT commands or file
-overrides, the built-in defaults are `video_enabled=0`,
-`video_bitrate_kbps=4096` and `outgoing_call_timeout=60`. The boot default still
-comes from `/mnt/mtd/sip_media.conf` when a key is present, but Home Assistant
-publishes these command topics as retained MQTT messages, so the last selected
-value is replayed after a daemon or WiBox reboot and takes priority over the file
-value. The daemon republishes the accepted/clamped state separately.
+Real outside-panel rings (`ALARM_REPORT`) also trigger an automatic snapshot.
+The daemon waits for `Ring Snapshot Delay` (`snapshot/ring_delay_ms`, default
+`2000`, range `0..5000 ms`, step `500 ms`), then captures without sending
+`START_CALL` or `STOP_CALL`; the physical panel has already opened the video
+path for that ring. Manual snapshots still open a temporary panel context
+because cold captures without it produce a blue frame.
+
+The `Video Enabled`, `Video Bitrate`, `Outgoing Call Timeout` and `Ring Snapshot
+Delay` entities are runtime configuration overrides. Without retained MQTT
+commands or file overrides, the built-in defaults are `video_enabled=0`,
+`video_bitrate_kbps=4096`, `outgoing_call_timeout=60` and
+`ring_snapshot_delay_ms=2000`. The boot default still comes from
+`/mnt/mtd/sip_media.conf` when a key is present, but Home Assistant publishes
+these command topics as retained MQTT messages, so the last selected value is
+replayed after a daemon or WiBox reboot and takes priority over the file value.
+The daemon republishes the accepted/clamped state separately.
 
 Video resolution is not exposed over MQTT because only D1 `688x576` is currently
 validated. If more modes are added, they should be exposed as a closed MQTT

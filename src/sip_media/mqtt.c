@@ -41,6 +41,7 @@ typedef struct {
     int video_enabled;
     int video_bitrate_kbps;
     int outgoing_call_timeout;
+    int ring_snapshot_delay_ms;
     int call_forward_enabled;
     int firmware_update_enabled;
     char firmware_update_repo[128];
@@ -1052,6 +1053,8 @@ void mqtt_publish_discovery(void) {
                           512, 4096, 256, "kbps", "video-high-definition");
     publish_number_config("outgoing_call_timeout", "Outgoing Call Timeout",
                           "call/timeout_seconds", 10, 120, 5, "s", "timer-outline");
+    publish_number_config("ring_snapshot_delay", "Ring Snapshot Delay",
+                          "snapshot/ring_delay_ms", 0, 5000, 500, "ms", "timer-outline");
     publish_call_forward_switch_config();
 }
 
@@ -1098,6 +1101,13 @@ void mqtt_publish_outgoing_call_timeout(int timeout_seconds) {
     mqtt_state.outgoing_call_timeout = timeout_seconds;
     snprintf(value, sizeof(value), "%d", timeout_seconds);
     publish_suffix("call/timeout_seconds", value, 1);
+}
+
+void mqtt_publish_ring_snapshot_delay(int delay_ms) {
+    char value[32];
+    mqtt_state.ring_snapshot_delay_ms = delay_ms;
+    snprintf(value, sizeof(value), "%d", delay_ms);
+    publish_suffix("snapshot/ring_delay_ms", value, 1);
 }
 
 void mqtt_publish_call_forward_enabled(int enabled) {
@@ -1256,6 +1266,15 @@ static void handle_mqtt_message(const char* topic, const char* payload) {
         return;
     }
 
+    topic_path(expected, sizeof(expected), "snapshot/ring_delay_ms/set");
+    if (strcmp(topic, expected) == 0) {
+        if (parse_int_payload(payload, &int_value) == 0 &&
+            mqtt_state.callbacks.set_ring_snapshot_delay) {
+            mqtt_state.callbacks.set_ring_snapshot_delay(int_value, mqtt_state.user_data);
+        }
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "call_forward/enabled/set");
     if (strcmp(topic, expected) == 0) {
         if (payload_is_on(payload) && mqtt_state.callbacks.set_call_forward_enabled) {
@@ -1410,6 +1429,7 @@ static void* mqtt_thread_func(void* arg) {
         mqtt_publish_video_enabled(mqtt_state.video_enabled);
         mqtt_publish_video_bitrate(mqtt_state.video_bitrate_kbps);
         mqtt_publish_outgoing_call_timeout(mqtt_state.outgoing_call_timeout);
+        mqtt_publish_ring_snapshot_delay(mqtt_state.ring_snapshot_delay_ms);
         mqtt_publish_call_forward_enabled(mqtt_state.call_forward_enabled);
         mqtt_publish_wifi_stats();
 
@@ -1467,6 +1487,7 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
     mqtt_state.video_enabled = app_config->video_enabled;
     mqtt_state.video_bitrate_kbps = app_config->video_bitrate_kbps;
     mqtt_state.outgoing_call_timeout = app_config->outgoing_call_timeout;
+    mqtt_state.ring_snapshot_delay_ms = app_config->ring_snapshot_delay_ms;
     mqtt_state.call_forward_enabled = app_config->serial_listener_enabled ? 1 : 0;
     mqtt_state.firmware_update_enabled = app_config->firmware_update_enabled;
     strncpy(mqtt_state.firmware_update_repo, app_config->firmware_update_repo,

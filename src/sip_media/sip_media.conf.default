@@ -14,6 +14,9 @@ video_rtp_port=8002
 video_payload_type=96
 video_bitrate_kbps=4096
 
+# Snapshot Configuration
+ring_snapshot_delay_ms=2000
+
 # Local Control Pipe
 sip_listen_pipe=/tmp/pipe_sip
 
