@@ -279,6 +279,18 @@ Commands sent by the daemon are published on the same topics with
 `direction: "out"`, for example `START_CALL`, `STOP_CALL`, `UNLOCK_DOOR` and
 `ENABLE_PUSH_STATE`.
 
+The `codex/uart-init-experiments` branch also sends the Sofia-observed UART
+initialization probes once after the serial monitor opens `/dev/ttySGK1`:
+
+```text
+SOFIA_UART_SET_MODE   FB 10 00 1B
+SOFIA_UART_START      FB 10 04 1F
+SOFIA_UART_POST_INIT  FB 10 5E 79
+```
+
+Those probes are experimental and intended to check whether the MCU starts
+emitting additional events such as `CMD_DOWN_LONG_1` / `CMD_DOWN_LONG_2`.
+
 Real outside-panel calls must arrive as `ALARM_REPORT`. If pressing the physical
 WiBox forward button only produces `PUSH_STATE_0` / `PUSH_STATE_1`, that only
 proves the call-forward button is being read. It does not prove the WiBox is

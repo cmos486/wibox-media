@@ -2067,6 +2067,23 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     }
 }
 
+static void send_experimental_sofia_uart_init_once(void) {
+    static int sent = 0;
+
+    if (sent) {
+        return;
+    }
+    sent = 1;
+
+    PJ_LOG(3,(THIS_FILE, "Sending experimental Sofia UART init sequence"));
+    intercom_send_command(INTERCOM_CMD_SOFIA_UART_SET_MODE);
+    usleep(100000);
+    intercom_send_command(INTERCOM_CMD_SOFIA_UART_START);
+    usleep(100000);
+    intercom_send_command(INTERCOM_CMD_SOFIA_UART_POST_INIT);
+    usleep(100000);
+}
+
 static void* serial_monitor_thread_func(void* arg) {
     unsigned char frame[4];
     size_t frame_len = 0;
@@ -2104,6 +2121,7 @@ static void* serial_monitor_thread_func(void* arg) {
                 continue;
             }
             PJ_LOG(3,(THIS_FILE, "Serial monitor opened %s", app_config.intercom_device));
+            send_experimental_sofia_uart_init_once();
         }
 
         n = read(serial_fd, buffer, sizeof(buffer));
