@@ -50,3 +50,5 @@ research/sofia_re/
 
 # Codebase memory artifact
 .codebase-memory/
+
+/include/bin/wibox-media-daemon
