@@ -1,4 +1,5 @@
 #include "intercom.h"
+#include "mqtt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -10,17 +11,18 @@
 typedef struct {
     intercom_cmd_t cmd;
     const char* name;
+    const char* event_type;
     unsigned char code[4];
 } intercom_command_def_t;
 
 static intercom_command_def_t command_defs[] = {
-    {INTERCOM_CMD_UNLOCK_DOOR,       "UNLOCK_DOOR",       {0xFB, 0x12, 0x01, 0x1E}},
-    {INTERCOM_CMD_START_CALL,        "START_CALL",        {0xFB, 0x14, 0x01, 0x20}},
-    {INTERCOM_CMD_STOP_CALL,         "STOP_CALL",         {0xFB, 0x14, 0x00, 0x1F}},
-    {INTERCOM_CMD_ENABLE_PUSH_STATE, "ENABLE_PUSH_STATE", {0xFB, 0x19, 0x01, 0x25}},
-    {INTERCOM_CMD_DISABLE_PUSH_STATE,"DISABLE_PUSH_STATE",{0xFB, 0x19, 0x00, 0x24}},
-    {INTERCOM_CMD_F1_ON,             "F1_ON",             {0xFB, 0x17, 0x01, 0x23}},
-    {INTERCOM_CMD_F1_OFF,            "F1_OFF",            {0xFB, 0x17, 0x00, 0x22}},
+    {INTERCOM_CMD_UNLOCK_DOOR,       "UNLOCK_DOOR",       "unlock_door",        {0xFB, 0x12, 0x01, 0x1E}},
+    {INTERCOM_CMD_START_CALL,        "START_CALL",        "start_call",         {0xFB, 0x14, 0x01, 0x20}},
+    {INTERCOM_CMD_STOP_CALL,         "STOP_CALL",         "stop_call",          {0xFB, 0x14, 0x00, 0x1F}},
+    {INTERCOM_CMD_ENABLE_PUSH_STATE, "ENABLE_PUSH_STATE", "enable_push_state",  {0xFB, 0x19, 0x01, 0x25}},
+    {INTERCOM_CMD_DISABLE_PUSH_STATE,"DISABLE_PUSH_STATE","disable_push_state", {0xFB, 0x19, 0x00, 0x24}},
+    {INTERCOM_CMD_F1_ON,             "F1_ON",             "f1_on",              {0xFB, 0x17, 0x01, 0x23}},
+    {INTERCOM_CMD_F1_OFF,            "F1_OFF",            "f1_off",             {0xFB, 0x17, 0x00, 0x22}},
 };
 
 #define NUM_COMMANDS (sizeof(command_defs) / sizeof(command_defs[0]))
@@ -79,6 +81,8 @@ int intercom_send_command(intercom_cmd_t cmd) {
     printf("Sent intercom command: %s [%02X %02X %02X %02X]\n",
            cmd_def->name, cmd_def->code[0], cmd_def->code[1],
            cmd_def->code[2], cmd_def->code[3]);
+    mqtt_publish_uart_event_ex(cmd_def->event_type, cmd_def->name, "out",
+                               cmd_def->code, 4, (int)cmd_def->code[2], 1);
     return 0;
 }
 

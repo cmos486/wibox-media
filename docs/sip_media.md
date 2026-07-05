@@ -244,6 +244,41 @@ HANG_UP       FB 13 00 1E / FB 13 01 1F
 STOP_RING     FB 23 00 2E
 ```
 
+The daemon logs every raw serial read and publishes UART observability over
+MQTT without changing the media state model. `media/state` remains limited to
+`idle`, `ringing` and `established`; low-level panel events are exposed as
+separate event telemetry.
+
+MQTT topics:
+
+```text
+wibox/<hostname>/uart/event  stateless JSON event, not retained
+```
+
+Home Assistant discovery adds:
+
+```text
+event.wibox_uart_event       stateless UART event entity
+```
+
+Example payload:
+
+```json
+{
+  "event_type": "cmd_stop_ring",
+  "alias": "CMD_STOP_RING",
+  "raw": "FB 23 00 2E",
+  "direction": "in",
+  "param": 0,
+  "known": true,
+  "ts": 1783274400
+}
+```
+
+Commands sent by the daemon are published on the same topics with
+`direction: "out"`, for example `START_CALL`, `STOP_CALL`, `UNLOCK_DOOR` and
+`ENABLE_PUSH_STATE`.
+
 Real outside-panel calls must arrive as `ALARM_REPORT`. If pressing the physical
 WiBox forward button only produces `PUSH_STATE_0` / `PUSH_STATE_1`, that only
 proves the call-forward button is being read. It does not prove the WiBox is

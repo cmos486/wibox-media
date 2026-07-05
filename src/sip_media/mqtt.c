@@ -578,6 +578,32 @@ static void publish_sensor_config(const char* object_id, const char* name,
     mqtt_publish_raw(topic, payload, 1);
 }
 
+static void publish_uart_event_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[3072];
+
+    discovery_topic(topic, sizeof(topic), "event", "uart_event");
+    topic_path(state_topic, sizeof(state_topic), "uart/event");
+    unique_id(uid, sizeof(uid), "uart_event");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"UART Event\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+             "\"event_types\":[\"raw_read\",\"alarm_report\",\"cmd_reset\","
+             "\"unlock_door\",\"start_call\",\"stop_call\",\"enable_push_state\","
+             "\"disable_push_state\",\"f1_on\",\"f1_off\",\"hang_up_0\","
+             "\"hang_up_1\",\"cmd_stop_ring\",\"push_state_0\",\"push_state_1\","
+             "\"mcu_state_0\",\"mcu_state_1\",\"cmd_down_long_1\","
+             "\"cmd_down_long_2\",\"unknown_fb\"],"
+             "\"icon\":\"mdi:serial-port\",%s}",
+             uid, state_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_number_config(const char* object_id, const char* name,
                                   const char* topic_suffix, int min, int max,
                                   int step, const char* unit, const char* icon) {
@@ -943,6 +969,10 @@ static void clear_legacy_entities(void) {
     clear_retained_topic(topic);
     topic_path(topic, sizeof(topic), "snapshot/status");
     clear_retained_topic(topic);
+    discovery_topic(topic, sizeof(topic), "sensor", "last_uart_event");
+    clear_retained_topic(topic);
+    topic_path(topic, sizeof(topic), "uart/last");
+    clear_retained_topic(topic);
 }
 
 static void clear_firmware_update_entities(void) {
@@ -1113,6 +1143,7 @@ void mqtt_publish_discovery(void) {
     publish_developer_simulate_ding_button_config();
     publish_snapshot_button_config();
     publish_snapshot_image_config();
+    publish_uart_event_config();
     publish_sensor_config("media_state", "Media State", "media/state", "", "phone");
     publish_sensor_config("firmware_version", "Firmware Version", "firmware/version", "", "tag");
     publish_sensor_config("firmware_commit", "Firmware Commit", "firmware/commit", "", "source-commit");
@@ -1245,6 +1276,61 @@ void mqtt_publish_wifi_stats(void) {
 
 void mqtt_publish_snapshot_available(int available) {
     publish_suffix("snapshot/take/availability", available ? "online" : "offline", 1);
+}
+
+static void bytes_to_hex(const unsigned char* data, size_t len, char* out, size_t out_size) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t i;
+    size_t pos = 0;
+
+    if (!out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!data) {
+        return;
+    }
+
+    for (i = 0; i < len && pos + 4 < out_size; i++) {
+        if (i > 0) {
+            out[pos++] = ' ';
+        }
+        out[pos++] = hex[(data[i] >> 4) & 0x0f];
+        out[pos++] = hex[data[i] & 0x0f];
+    }
+    out[pos] = '\0';
+}
+
+void mqtt_publish_uart_event(const char* event_type, const char* alias,
+                             const unsigned char* raw, size_t raw_len,
+                             int param, int known) {
+    mqtt_publish_uart_event_ex(event_type, alias, "in", raw, raw_len, param, known);
+}
+
+void mqtt_publish_uart_event_ex(const char* event_type, const char* alias,
+                                const char* direction,
+                                const unsigned char* raw, size_t raw_len,
+                                int param, int known) {
+    char event_topic[256];
+    char raw_hex[256];
+    char payload[768];
+    const char* safe_event_type = event_type && event_type[0] ? event_type : "unknown_fb";
+    const char* safe_alias = alias && alias[0] ? alias : "UNKNOWN";
+    const char* safe_direction = direction && direction[0] ? direction : "in";
+
+    if (!mqtt_state.enabled || !mqtt_state.connected || !raw || raw_len == 0) {
+        return;
+    }
+
+    bytes_to_hex(raw, raw_len, raw_hex, sizeof(raw_hex));
+    snprintf(payload, sizeof(payload),
+             "{\"event_type\":\"%s\",\"alias\":\"%s\",\"raw\":\"%s\","
+             "\"direction\":\"%s\",\"param\":%d,\"known\":%s,\"ts\":%ld}",
+             safe_event_type, safe_alias, raw_hex, safe_direction, param,
+             known ? "true" : "false", (long)time(NULL));
+
+    topic_path(event_topic, sizeof(event_topic), "uart/event");
+    mqtt_publish_raw(event_topic, payload, 0);
 }
 
 static int payload_is_on(const char* payload) {

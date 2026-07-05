@@ -1925,22 +1925,23 @@ typedef enum {
 typedef struct {
     uart_code_t code;
     const char* name;
+    const char* event_type;
     unsigned char bytes[4];
 } uart_code_def_t;
 
 static const uart_code_def_t uart_codes[] = {
-    {UART_CODE_ALARM_REPORT,    "ALARM_REPORT",    {0xFB, 0x11, 0x00, 0x1C}},
-    {UART_CODE_CMD_RESET,       "CMD_RESET",       {0xFB, 0x20, 0x00, 0x2B}},
-    {UART_CODE_START_CALL,      "START_CALL",      {0xFB, 0x14, 0x01, 0x20}},
-    {UART_CODE_HANG_UP_0,       "HANG_UP_0",       {0xFB, 0x13, 0x00, 0x1E}},
-    {UART_CODE_HANG_UP_1,       "HANG_UP_1",       {0xFB, 0x13, 0x01, 0x1F}},
-    {UART_CODE_CMD_STOP_RING,   "CMD_STOP_RING",   {0xFB, 0x23, 0x00, 0x2E}},
-    {UART_CODE_PUSH_STATE_0,    "PUSH_STATE_0",    {0xFB, 0x19, 0x00, 0x24}},
-    {UART_CODE_PUSH_STATE_1,    "PUSH_STATE_1",    {0xFB, 0x19, 0x01, 0x25}},
-    {UART_CODE_MCU_STATE_0,     "MCU_STATE_0",     {0xFB, 0x16, 0x00, 0x21}},
-    {UART_CODE_MCU_STATE_1,     "MCU_STATE_1",     {0xFB, 0x16, 0x01, 0x22}},
-    {UART_CODE_CMD_DOWN_LONG_1, "CMD_DOWN_LONG_1", {0xFB, 0x24, 0x01, 0x30}},
-    {UART_CODE_CMD_DOWN_LONG_2, "CMD_DOWN_LONG_2", {0xFB, 0x24, 0x02, 0x31}}
+    {UART_CODE_ALARM_REPORT,    "ALARM_REPORT",    "alarm_report",    {0xFB, 0x11, 0x00, 0x1C}},
+    {UART_CODE_CMD_RESET,       "CMD_RESET",       "cmd_reset",       {0xFB, 0x20, 0x00, 0x2B}},
+    {UART_CODE_START_CALL,      "START_CALL",      "start_call",      {0xFB, 0x14, 0x01, 0x20}},
+    {UART_CODE_HANG_UP_0,       "HANG_UP_0",       "hang_up_0",       {0xFB, 0x13, 0x00, 0x1E}},
+    {UART_CODE_HANG_UP_1,       "HANG_UP_1",       "hang_up_1",       {0xFB, 0x13, 0x01, 0x1F}},
+    {UART_CODE_CMD_STOP_RING,   "CMD_STOP_RING",   "cmd_stop_ring",   {0xFB, 0x23, 0x00, 0x2E}},
+    {UART_CODE_PUSH_STATE_0,    "PUSH_STATE_0",    "push_state_0",    {0xFB, 0x19, 0x00, 0x24}},
+    {UART_CODE_PUSH_STATE_1,    "PUSH_STATE_1",    "push_state_1",    {0xFB, 0x19, 0x01, 0x25}},
+    {UART_CODE_MCU_STATE_0,     "MCU_STATE_0",     "mcu_state_0",     {0xFB, 0x16, 0x00, 0x21}},
+    {UART_CODE_MCU_STATE_1,     "MCU_STATE_1",     "mcu_state_1",     {0xFB, 0x16, 0x01, 0x22}},
+    {UART_CODE_CMD_DOWN_LONG_1, "CMD_DOWN_LONG_1", "cmd_down_long_1", {0xFB, 0x24, 0x01, 0x30}},
+    {UART_CODE_CMD_DOWN_LONG_2, "CMD_DOWN_LONG_2", "cmd_down_long_2", {0xFB, 0x24, 0x02, 0x31}}
 };
 
 static const uart_code_def_t* find_uart_code(const unsigned char frame[4]) {
@@ -1974,6 +1975,29 @@ static void terminate_call_from_serial(const char* reason) {
     sip_calling_terminate_call();
 }
 
+static void format_uart_bytes(const unsigned char* data, size_t len, char* out, size_t out_size) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t i;
+    size_t pos = 0;
+
+    if (!out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!data) {
+        return;
+    }
+
+    for (i = 0; i < len && pos + 4 < out_size; i++) {
+        if (i > 0) {
+            out[pos++] = ' ';
+        }
+        out[pos++] = hex[(data[i] >> 4) & 0x0f];
+        out[pos++] = hex[data[i] & 0x0f];
+    }
+    out[pos] = '\0';
+}
+
 static void handle_uart_frame(const unsigned char frame[4]) {
     const uart_code_def_t* def = find_uart_code(frame);
 
@@ -1981,12 +2005,14 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         prometheus_inc_uart_unknown_frame();
         PJ_LOG(3,(THIS_FILE, "UART code unknown: %02X %02X %02X %02X",
                   frame[0], frame[1], frame[2], frame[3]));
+        mqtt_publish_uart_event("unknown_fb", "UNKNOWN", frame, 4, (int)frame[2], 0);
         return;
     }
 
     prometheus_inc_uart_frame();
     PJ_LOG(3,(THIS_FILE, "UART code received: %s [%02X %02X %02X %02X]",
               def->name, frame[0], frame[1], frame[2], frame[3]));
+    mqtt_publish_uart_event(def->event_type, def->name, frame, 4, (int)frame[2], 1);
 
     switch (def->code) {
     case UART_CODE_ALARM_REPORT:
@@ -2082,6 +2108,10 @@ static void* serial_monitor_thread_func(void* arg) {
 
         n = read(serial_fd, buffer, sizeof(buffer));
         if (n > 0) {
+            char raw_hex[128];
+            format_uart_bytes(buffer, (size_t)n, raw_hex, sizeof(raw_hex));
+            PJ_LOG(3,(THIS_FILE, "UART raw read %zd bytes: %s", n, raw_hex));
+            mqtt_publish_uart_event("raw_read", "RAW_READ", buffer, (size_t)n, -1, 0);
             for (i = 0; i < n; i++) {
                 if (frame_len == 0 && buffer[i] != 0xFB) {
                     PJ_LOG(3,(THIS_FILE, "Ignoring UART byte before frame: %02X", buffer[i]));

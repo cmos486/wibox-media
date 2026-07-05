@@ -2,6 +2,7 @@
 #define WIBOX_MQTT_H
 
 #include "config.h"
+#include <stddef.h>
 
 typedef struct {
     void (*open_door)(void* user_data);
@@ -41,5 +42,12 @@ void mqtt_publish_door_unlocked_pulse(void);
 void mqtt_publish_wifi_stats(void);
 void mqtt_publish_snapshot_available(int available);
 int mqtt_publish_snapshot_file(const char* path);
+void mqtt_publish_uart_event(const char* event_type, const char* alias,
+                             const unsigned char* raw, size_t raw_len,
+                             int param, int known);
+void mqtt_publish_uart_event_ex(const char* event_type, const char* alias,
+                                const char* direction,
+                                const unsigned char* raw, size_t raw_len,
+                                int param, int known);
 
 #endif
