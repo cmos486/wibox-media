@@ -269,6 +269,8 @@ Commands:
 ```text
 wibox/<hostname>/door/open/set = PRESS
 wibox/<hostname>/f1/trigger/set = PRESS
+wibox/<hostname>/developer/mode/set = ON|OFF
+wibox/<hostname>/developer/simulate_ding/set = PRESS
 wibox/<hostname>/snapshot/take/set = PRESS
 wibox/<hostname>/snapshot/ring_delay_ms/set = 0..5000
 wibox/<hostname>/video/enabled/set = ON|OFF
@@ -360,6 +362,14 @@ select, never as a free-form text or number input.
 this is not the main door opener; it is intended for installations wired with an
 additional F1 relay, for example an auxiliary door, lights or lift control.
 
+`developer/simulate_ding/set` writes the configured `ding_message` to
+`/tmp/pipe_sip`, equivalent to `echo DING > /tmp/pipe_sip`. It does not
+duplicate the doorbell logic in the MQTT handler; it triggers the existing local
+control-pipe path. The command only runs while `developer/mode` is `ON`; when
+developer mode is `OFF`, Home Assistant marks the button unavailable and direct
+MQTT commands are ignored. Retained messages on both developer topics are
+ignored, and developer mode defaults to `OFF` after daemon restart.
+
 `call_forward/enabled` controls the physical Fermax call-forward/redirect state.
 `ON` sends `FB 19 01 25` and should leave the WiBox LED blue. `OFF` sends
 `FB 19 00 24` and should leave it green. The same state is updated when the
@@ -437,8 +447,15 @@ echo 'AUDIO_TEST 192.168.0.183 4012 5' > /tmp/pipe_sip
 echo 'VIDEO_TEST 192.168.0.183 4014 5' > /tmp/pipe_sip
 ```
 
-`DING` simulates a doorbell. `UART ...` injects a four-byte serial frame into
-the same handler used by `/dev/ttySGK1`.
+`DING` simulates a doorbell from the local control pipe. It triggers the same
+outgoing SIP call flow as a panel ring and also starts the automatic ring
+snapshot with a temporary panel context, because no physical panel press exists
+to open the analog video path for the simulated event.
+
+`UART ...` injects a four-byte serial frame into the same handler used by
+`/dev/ttySGK1`. For example, `UART FB 11 00 1C` follows the exact
+`ALARM_REPORT` software path used by a real panel ring; that path assumes the
+physical panel has already opened the video path.
 
 `AUDIO_TEST` and `VIDEO_TEST` are bounded diagnostics. They start the panel call
 context, run media to the supplied IP/port for the requested number of seconds,

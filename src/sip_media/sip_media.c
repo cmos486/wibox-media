@@ -76,6 +76,7 @@ static struct sockaddr_in remote_rtp_addr; // Where to send audio packets
 static int current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int snapshot_active = 0;
+static int simulated_ding_panel_context_active = 0;
 static char local_ip_addr[64] = "0.0.0.0";
 
 typedef struct {
@@ -214,6 +215,7 @@ static void unlock_door(const char* source);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
 static void mqtt_take_snapshot_callback(void* user_data);
+static void mqtt_simulate_ding_callback(void* user_data);
 static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
                                   const char* reason, int start_rtsp_after);
 static void* snapshot_thread_func(void* arg);
@@ -226,6 +228,7 @@ static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data)
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data);
 static int clamp_ring_snapshot_delay(int delay_ms);
+static void handle_ding_trigger(const char* source);
 
 // Module to handle incoming requests and responses
 static pjsip_module mod_wibox = {
@@ -658,9 +661,13 @@ static pj_bool_t parse_rtp_dtmf_event(unsigned char* rtp_packet, ssize_t packet_
 static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t new_state, void* user_data) {
     // Handle call establishment (both incoming and outgoing)
     if (new_state == SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_ESTABLISHED) {
-        PJ_LOG(3,(THIS_FILE, "Call established - sending START_CALL to intercom"));
-        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-start");
-        intercom_send_command(INTERCOM_CMD_START_CALL);
+        if (simulated_ding_panel_context_active) {
+            PJ_LOG(3,(THIS_FILE, "Call established - simulated DING panel context already active"));
+        } else {
+            PJ_LOG(3,(THIS_FILE, "Call established - sending START_CALL to intercom"));
+            mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-start");
+            intercom_send_command(INTERCOM_CMD_START_CALL);
+        }
         set_call_active_status(PJ_TRUE);
         mqtt_publish_call_active(1);
         mqtt_publish_sip_call_active(1);
@@ -678,6 +685,7 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         PJ_LOG(3,(THIS_FILE, "Established call terminated - sending STOP_CALL to intercom"));
         mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-stop");
         intercom_send_command(INTERCOM_CMD_STOP_CALL);
+        simulated_ding_panel_context_active = 0;
         release_sip_video_or_stop("established-call-ended");
         stop_audio_session();
         set_call_active_status(PJ_FALSE);
@@ -693,7 +701,14 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
     // Handle non-established call termination (no intercom command needed)
     if (old_state != SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_IDLE &&
         (new_state == SIP_CALL_STATE_IDLE || new_state == SIP_CALL_STATE_FAILED)) {
-        PJ_LOG(3,(THIS_FILE, "Non-established call terminated - no intercom command needed"));
+        if (simulated_ding_panel_context_active) {
+            PJ_LOG(3,(THIS_FILE, "Non-established simulated DING call terminated - sending STOP_CALL to intercom"));
+            mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-stop");
+            intercom_send_command(INTERCOM_CMD_STOP_CALL);
+            simulated_ding_panel_context_active = 0;
+        } else {
+            PJ_LOG(3,(THIS_FILE, "Non-established call terminated - no intercom command needed"));
+        }
         release_sip_video_or_stop("non-established-call-ended");
         stop_audio_session();
         set_call_active_status(PJ_FALSE);
@@ -1230,6 +1245,33 @@ static void mqtt_take_snapshot_callback(void* user_data) {
     start_snapshot_capture(1, 0, "manual", 0);
 }
 
+static void mqtt_simulate_ding_callback(void* user_data) {
+    int fd;
+    char message[64];
+    size_t len;
+    (void)user_data;
+
+    snprintf(message, sizeof(message), "%s\n",
+             app_config.ding_message[0] ? app_config.ding_message : "DING");
+    len = strlen(message);
+
+    fd = open(app_config.sip_listen_pipe, O_WRONLY | O_NONBLOCK);
+    if (fd < 0) {
+        PJ_LOG(2,(THIS_FILE, "Developer simulate ding failed to open %s: %s",
+                  app_config.sip_listen_pipe, strerror(errno)));
+        return;
+    }
+
+    if (write(fd, message, len) != (ssize_t)len) {
+        PJ_LOG(2,(THIS_FILE, "Developer simulate ding failed to write %s: %s",
+                  app_config.sip_listen_pipe, strerror(errno)));
+    } else {
+        PJ_LOG(3,(THIS_FILE, "Developer simulate ding wrote '%s' to %s",
+                  app_config.ding_message, app_config.sip_listen_pipe));
+    }
+    close(fd);
+}
+
 static void publish_snapshot_button_availability(void) {
     int busy;
 
@@ -1385,10 +1427,14 @@ static void* snapshot_thread_func(void* arg) {
 
 stop_context:
     if (started_panel_context) {
-        intercom_send_command(INTERCOM_CMD_STOP_CALL);
-        set_call_active_status(PJ_FALSE);
-        mqtt_publish_call_active(0);
-        prometheus_set_call_active(0);
+        if (sip_calling_is_call_active()) {
+            printf("Snapshot leaving panel context active because SIP call is active\n");
+        } else {
+            intercom_send_command(INTERCOM_CMD_STOP_CALL);
+            set_call_active_status(PJ_FALSE);
+            mqtt_publish_call_active(0);
+            prometheus_set_call_active(0);
+        }
     }
 
 done:
@@ -1621,6 +1667,9 @@ static void handle_video_test_control(const char* message) {
 
 static void handle_ding_trigger(const char* source) {
     pj_status_t status;
+    int is_serial_alarm = source && strcmp(source, "serial alarm") == 0;
+    int needs_simulated_panel_context =
+        source && strcmp(source, "pipe") == 0;
 
     PJ_LOG(3,(THIS_FILE, "DING detected from %s - checking if we can make outgoing call",
               source ? source : "unknown"));
@@ -1634,14 +1683,35 @@ static void handle_ding_trigger(const char* source) {
     mqtt_publish_media_state("ringing");
     prometheus_set_ringing(1);
     prometheus_inc_ring();
-    if (source && strcmp(source, "serial alarm") == 0) {
+
+    if (needs_simulated_panel_context && !simulated_ding_panel_context_active) {
+        PJ_LOG(3,(THIS_FILE, "DING from pipe - opening simulated panel context"));
+        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "simulated-ding-start");
+        intercom_send_command(INTERCOM_CMD_START_CALL);
+        simulated_ding_panel_context_active = 1;
+        set_call_active_status(PJ_TRUE);
+        mqtt_publish_call_active(1);
+        prometheus_set_call_active(1);
+    }
+
+    if (is_serial_alarm) {
         start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring", 1);
+    } else if (needs_simulated_panel_context) {
+        start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms,
+                               "pipe-ring", 1);
     }
 
     PJ_LOG(3,(THIS_FILE, "Making outgoing call due to %s", source ? source : "DING"));
     status = sip_calling_make_call();
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to make outgoing call: %d", status));
+        if (simulated_ding_panel_context_active) {
+            intercom_send_command(INTERCOM_CMD_STOP_CALL);
+            simulated_ding_panel_context_active = 0;
+            set_call_active_status(PJ_FALSE);
+            mqtt_publish_call_active(0);
+            prometheus_set_call_active(0);
+        }
     }
 }
 
@@ -2615,6 +2685,7 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.open_door = mqtt_open_door_callback;
     mqtt_callbacks.trigger_f1 = mqtt_trigger_f1_callback;
     mqtt_callbacks.take_snapshot = mqtt_take_snapshot_callback;
+    mqtt_callbacks.simulate_ding = mqtt_simulate_ding_callback;
     mqtt_callbacks.set_video_enabled = mqtt_set_video_enabled_callback;
     mqtt_callbacks.set_video_bitrate = mqtt_set_video_bitrate_callback;
     mqtt_callbacks.set_outgoing_call_timeout = mqtt_set_outgoing_call_timeout_callback;

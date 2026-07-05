@@ -40,6 +40,7 @@ typedef struct {
     char local_ip[64];
     int video_enabled;
     int rtsp_enabled;
+    int developer_mode_enabled;
     int video_bitrate_kbps;
     int outgoing_call_timeout;
     int ring_snapshot_delay_ms;
@@ -653,6 +654,51 @@ static void publish_f1_button_config(void) {
     mqtt_publish_raw(topic, payload, 1);
 }
 
+static void publish_developer_simulate_ding_button_config(void) {
+    char topic[256];
+    char command_topic[256];
+    char availability_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "button", "developer_simulate_ding");
+    topic_path(command_topic, sizeof(command_topic), "developer/simulate_ding/set");
+    topic_path(availability_topic, sizeof(availability_topic), "developer/simulate_ding/availability");
+    unique_id(uid, sizeof(uid), "developer_simulate_ding");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Developer Simulate Ding\",\"unique_id\":\"%s\","
+             "\"command_topic\":\"%s\",\"payload_press\":\"PRESS\","
+             "\"availability_topic\":\"%s\",\"icon\":\"mdi:bug-play\",%s}",
+             uid, command_topic, availability_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_developer_mode_switch_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "switch", "developer_mode");
+    topic_path(state_topic, sizeof(state_topic), "developer/mode");
+    topic_path(command_topic, sizeof(command_topic), "developer/mode/set");
+    unique_id(uid, sizeof(uid), "developer_mode");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Developer Mode\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"payload_on\":\"ON\",\"payload_off\":\"OFF\","
+             "\"availability_topic\":\"%s\",\"icon\":\"mdi:developer-board\",%s}",
+             uid, state_topic, command_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_snapshot_button_config(void) {
     char topic[256];
     char command_topic[256];
@@ -1063,6 +1109,8 @@ void mqtt_publish_discovery(void) {
     }
     publish_button_config();
     publish_f1_button_config();
+    publish_developer_mode_switch_config();
+    publish_developer_simulate_ding_button_config();
     publish_snapshot_button_config();
     publish_snapshot_image_config();
     publish_sensor_config("media_state", "Media State", "media/state", "", "phone");
@@ -1143,6 +1191,14 @@ void mqtt_publish_ring_snapshot_delay(int delay_ms) {
 void mqtt_publish_call_forward_enabled(int enabled) {
     mqtt_state.call_forward_enabled = enabled ? 1 : 0;
     publish_suffix("call_forward/enabled", enabled ? "ON" : "OFF", 1);
+}
+
+static void mqtt_publish_developer_mode(int enabled) {
+    mqtt_state.developer_mode_enabled = enabled ? 1 : 0;
+    publish_suffix("developer/mode",
+                   mqtt_state.developer_mode_enabled ? "ON" : "OFF", 1);
+    publish_suffix("developer/simulate_ding/availability",
+                   mqtt_state.developer_mode_enabled ? "online" : "offline", 1);
 }
 
 void mqtt_publish_media_state(const char* state) {
@@ -1271,6 +1327,38 @@ static void handle_mqtt_message(const char* topic, const char* payload, int reta
         return;
     }
 
+    topic_path(expected, sizeof(expected), "developer/simulate_ding/set");
+    if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
+        if (!mqtt_state.developer_mode_enabled) {
+            printf("%s: developer simulate ding ignored - developer mode is OFF\n",
+                   MQTT_FILE);
+            return;
+        }
+        if (payload_is_on(payload) && mqtt_state.callbacks.simulate_ding) {
+            printf("%s: developer simulate ding command received\n", MQTT_FILE);
+            mqtt_state.callbacks.simulate_ding(mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "developer/mode/set");
+    if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
+        if (payload_is_on(payload)) {
+            mqtt_publish_developer_mode(1);
+        } else if (payload_is_off(payload)) {
+            mqtt_publish_developer_mode(0);
+        }
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "snapshot/take/set");
     if (strcmp(topic, expected) == 0) {
         if (retain) {
@@ -1376,6 +1464,8 @@ static int mqtt_subscribe_topics(void) {
     static const char* command_suffixes[] = {
         "door/open/set",
         "f1/trigger/set",
+        "developer/mode/set",
+        "developer/simulate_ding/set",
         "snapshot/take/set",
         "snapshot/ring_delay_ms/set",
         "video/enabled/set",
@@ -1512,6 +1602,7 @@ static void* mqtt_thread_func(void* arg) {
         mqtt_publish_snapshot_available(mqtt_state.video_enabled);
         mqtt_publish_video_enabled(mqtt_state.video_enabled);
         mqtt_publish_rtsp_enabled(mqtt_state.rtsp_enabled);
+        mqtt_publish_developer_mode(0);
         mqtt_publish_video_bitrate(mqtt_state.video_bitrate_kbps);
         mqtt_publish_outgoing_call_timeout(mqtt_state.outgoing_call_timeout);
         mqtt_publish_ring_snapshot_delay(mqtt_state.ring_snapshot_delay_ms);
@@ -1571,6 +1662,7 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
     strncpy(mqtt_state.local_ip, local_ip ? local_ip : "0.0.0.0", sizeof(mqtt_state.local_ip) - 1);
     mqtt_state.video_enabled = app_config->video_enabled;
     mqtt_state.rtsp_enabled = app_config->rtsp_enabled;
+    mqtt_state.developer_mode_enabled = 0;
     mqtt_state.video_bitrate_kbps = app_config->video_bitrate_kbps;
     mqtt_state.outgoing_call_timeout = app_config->outgoing_call_timeout;
     mqtt_state.ring_snapshot_delay_ms = app_config->ring_snapshot_delay_ms;
