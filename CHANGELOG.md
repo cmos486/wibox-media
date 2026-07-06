@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/segator/wibox-media/compare/v0.13.0...v0.14.0) (2026-07-06)
+
+
+### Features
+
+* add configurable outgoing SIP call flow ([7dc33d0](https://github.com/segator/wibox-media/commit/7dc33d022d0468c60c0b6f8491a1b10ed50d76bd))
+* publish UART events over MQTT ([978dd18](https://github.com/segator/wibox-media/commit/978dd18ef0587c2b2ae55c2c0f375c4bb2b21332))
+
 ## [0.13.0](https://github.com/segator/wibox-media/compare/v0.12.0...v0.13.0) (2026-07-05)
 
 
