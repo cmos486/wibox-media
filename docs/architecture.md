@@ -48,7 +48,7 @@ Doorbell-originated call:
   -> FB 19 01 25 to /dev/ttySGK1 to enable physical call forwarding
 /dev/ttySGK1 ALARM_REPORT
   -> media/state = ringing
-  -> SIP INVITE to outgoing_call_target
+  -> optional SIP INVITE to outgoing_call_target when sip_outgoing_call_enabled=1
   -> SIP established
   -> START_CALL to /dev/ttySGK1
   -> audio RTP starts
@@ -59,7 +59,7 @@ Doorbell-originated call:
 Hangup/timeout:
 
 ```text
-SIP BYE, SIP failure, HANG_UP or CMD_STOP_RING
+SIP BYE, SIP failure, HANG_UP or PHYSICAL_HANDSET_ANSWERED
   -> SIP video target is detached
   -> video worker stops only when no RTSP clients remain
   -> SIP audio target is detached

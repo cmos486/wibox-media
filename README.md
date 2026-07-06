@@ -87,6 +87,7 @@ Persistent config lives at:
 Minimal example:
 
 ```ini
+sip_outgoing_call_enabled=1
 outgoing_call_target=sip:1000@192.168.0.31:5060
 mqtt_enabled=1
 mqtt_host=192.168.0.203
@@ -97,12 +98,18 @@ prometheus_enabled=1
 ```
 
 Fresh installations default to `video_enabled=0`, `rtsp_enabled=0`,
-`video_bitrate_kbps=4096`, `outgoing_call_timeout=60` and
-`ring_snapshot_delay_ms=2000`. `video_enabled` is the global video capability
-flag for installations with a camera path; when it is off, SIP and RTSP run
-audio-only. These keys can be set in the file as boot defaults, but Home
-Assistant controls publish retained MQTT overrides that take priority after
-startup. Video resolution is not exposed as a free-form setting; the proven
+`video_bitrate_kbps=4096`, `sip_outgoing_call_enabled=1`,
+`outgoing_call_timeout=60` and `ring_snapshot_delay_ms=2000`.
+`sip_outgoing_call_enabled=0` keeps Home Assistant `media_state=ringing`
+notifications on doorbell press but skips the automatic outgoing SIP INVITE.
+`outgoing_call_timeout` controls how long the ring/call attempt may stay in
+`ringing` before returning to `idle`, regardless of whether the SIP INVITE is
+enabled.
+`video_enabled` is the global video capability flag for installations with a
+camera path; when it is off, SIP and RTSP run audio-only. These keys can be set
+in the file as boot defaults, but Home Assistant controls publish retained MQTT
+overrides that take priority after startup. Video resolution is not exposed as a
+free-form setting; the proven
 capture mode is D1 `688x576`, and any future resolution control must be a
 closed MQTT select.
 

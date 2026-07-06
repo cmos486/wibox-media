@@ -140,6 +140,13 @@ static pthread_once_t pj_external_thread_key_once = PTHREAD_ONCE_INIT;
 static int ding_pipe_fd = -1;
 static pthread_t ding_monitor_thread;
 static pj_bool_t ding_monitoring_active = PJ_FALSE;
+static pthread_mutex_t ringing_timeout_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unsigned int ringing_timeout_generation = 0;
+
+typedef struct {
+    unsigned int generation;
+    int timeout_seconds;
+} ringing_timeout_request_t;
 
 // Intercom serial monitoring
 static int serial_fd = -1;
@@ -212,6 +219,9 @@ static void stop_rtsp_service(void);
 static void on_rtsp_client_count_change(int video_clients, int audio_clients, void* user_data);
 static int ensure_pj_thread_registered(const char *name);
 static void unlock_door(const char* source);
+static int ensure_intercom_call_open(const char* reason);
+static void clear_intercom_call_state(const char* reason);
+static int close_intercom_call(const char* reason);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
 static void mqtt_take_snapshot_callback(void* user_data);
@@ -223,11 +233,18 @@ static void publish_snapshot_button_availability(void);
 static int clamp_recording_max_seconds(int seconds);
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data);
+static void mqtt_set_sip_outgoing_call_enabled_callback(int enabled, void* user_data);
+static void mqtt_set_outgoing_call_target_callback(const char* target_uri, void* user_data);
 static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data);
 static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data);
 static int clamp_ring_snapshot_delay(int delay_ms);
+static int normalize_sip_target_uri(const char* input, char* out, size_t out_size);
+static void invalidate_ringing_timeout(const char* reason);
+static void schedule_ringing_timeout(int timeout_seconds);
+static void* ringing_timeout_thread_func(void* arg);
+static void handle_simulated_ding_trigger(void);
 static void handle_ding_trigger(const char* source);
 
 // Module to handle incoming requests and responses
@@ -661,12 +678,15 @@ static pj_bool_t parse_rtp_dtmf_event(unsigned char* rtp_packet, ssize_t packet_
 static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t new_state, void* user_data) {
     // Handle call establishment (both incoming and outgoing)
     if (new_state == SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_ESTABLISHED) {
+        invalidate_ringing_timeout("sip-established");
         if (simulated_ding_panel_context_active) {
             PJ_LOG(3,(THIS_FILE, "Call established - simulated DING panel context already active"));
+        } else if (get_call_active_status()) {
+            PJ_LOG(3,(THIS_FILE, "Call established - intercom line already active, not sending START_CALL"));
         } else {
             PJ_LOG(3,(THIS_FILE, "Call established - sending START_CALL to intercom"));
             mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-start");
-            intercom_send_command(INTERCOM_CMD_START_CALL);
+            ensure_intercom_call_open("sip-established");
         }
         set_call_active_status(PJ_TRUE);
         mqtt_publish_call_active(1);
@@ -682,18 +702,19 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
     // Handle call termination - ONLY send STOP_CALL if we're ending an ESTABLISHED call
     if (old_state == SIP_CALL_STATE_ESTABLISHED &&
         (new_state == SIP_CALL_STATE_IDLE || new_state == SIP_CALL_STATE_FAILED)) {
-        PJ_LOG(3,(THIS_FILE, "Established call terminated - sending STOP_CALL to intercom"));
-        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-stop");
-        intercom_send_command(INTERCOM_CMD_STOP_CALL);
-        simulated_ding_panel_context_active = 0;
+        if (get_call_active_status()) {
+            PJ_LOG(3,(THIS_FILE, "Established call terminated - sending STOP_CALL to intercom"));
+            mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-stop");
+            close_intercom_call("sip-established-ended");
+        } else {
+            PJ_LOG(3,(THIS_FILE, "Established call terminated - intercom line already closed"));
+            clear_intercom_call_state("sip-established-ended");
+        }
         release_sip_video_or_stop("established-call-ended");
         stop_audio_session();
-        set_call_active_status(PJ_FALSE);
-        mqtt_publish_call_active(0);
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
-        prometheus_set_call_active(0);
         prometheus_set_sip_call_active(0);
         prometheus_set_ringing(0);
     }
@@ -704,19 +725,15 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         if (simulated_ding_panel_context_active) {
             PJ_LOG(3,(THIS_FILE, "Non-established simulated DING call terminated - sending STOP_CALL to intercom"));
             mute_audio_input_for_ms(app_config.audio_line_mute_ms, "intercom-stop");
-            intercom_send_command(INTERCOM_CMD_STOP_CALL);
-            simulated_ding_panel_context_active = 0;
+            close_intercom_call("sip-non-established-simulated");
         } else {
             PJ_LOG(3,(THIS_FILE, "Non-established call terminated - no intercom command needed"));
         }
         release_sip_video_or_stop("non-established-call-ended");
         stop_audio_session();
-        set_call_active_status(PJ_FALSE);
-        mqtt_publish_call_active(0);
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
-        prometheus_set_call_active(0);
         prometheus_set_sip_call_active(0);
         prometheus_set_ringing(0);
     }
@@ -1204,8 +1221,50 @@ static void unlock_door(const char* source) {
     }
 }
 
+static int ensure_intercom_call_open(const char* reason) {
+    if (get_call_active_status()) {
+        PJ_LOG(3,(THIS_FILE, "Intercom call line already active - not sending START_CALL reason=%s",
+                  reason ? reason : "unknown"));
+        return 0;
+    }
+
+    if (intercom_send_command(INTERCOM_CMD_START_CALL) != 0) {
+        PJ_LOG(2,(THIS_FILE, "Failed to send START_CALL reason=%s",
+                  reason ? reason : "unknown"));
+        return -1;
+    }
+
+    set_call_active_status(PJ_TRUE);
+    mqtt_publish_call_active(1);
+    prometheus_set_call_active(1);
+    return 1;
+}
+
+static void clear_intercom_call_state(const char* reason) {
+    PJ_LOG(3,(THIS_FILE, "Clearing intercom call state reason=%s",
+              reason ? reason : "unknown"));
+    simulated_ding_panel_context_active = 0;
+    set_call_active_status(PJ_FALSE);
+    mqtt_publish_call_active(0);
+    prometheus_set_call_active(0);
+}
+
+static int close_intercom_call(const char* reason) {
+    int rc;
+
+    rc = intercom_send_command(INTERCOM_CMD_STOP_CALL);
+    if (rc != 0) {
+        PJ_LOG(2,(THIS_FILE, "Failed to send STOP_CALL reason=%s",
+                  reason ? reason : "unknown"));
+    }
+
+    clear_intercom_call_state(reason);
+    return rc == 0 ? 0 : -1;
+}
+
 
 static void mqtt_open_door_callback(void* user_data) {
+    int started_panel_context;
     (void)user_data;
 
     if (sip_calling_is_call_active()) {
@@ -1214,17 +1273,16 @@ static void mqtt_open_door_callback(void* user_data) {
     }
 
     printf("MQTT open door requested without active call; starting panel context\n");
-    intercom_send_command(INTERCOM_CMD_START_CALL);
-    set_call_active_status(PJ_TRUE);
-    mqtt_publish_call_active(1);
-    prometheus_set_call_active(1);
+    started_panel_context = ensure_intercom_call_open("mqtt-open-door");
+    if (started_panel_context < 0) {
+        return;
+    }
     usleep(500000);
     unlock_door("mqtt");
-    usleep(1000000);
-    intercom_send_command(INTERCOM_CMD_STOP_CALL);
-    set_call_active_status(PJ_FALSE);
-    mqtt_publish_call_active(0);
-    prometheus_set_call_active(0);
+    if (started_panel_context > 0) {
+        usleep(1000000);
+        close_intercom_call("mqtt-open-door");
+    }
 }
 
 static void mqtt_trigger_f1_callback(void* user_data) {
@@ -1369,12 +1427,13 @@ static void* snapshot_thread_func(void* arg) {
     if (!get_call_active_status()) {
         if (request.open_panel_context) {
             printf("Snapshot starting temporary panel context\n");
-            intercom_send_command(INTERCOM_CMD_START_CALL);
-            set_call_active_status(PJ_TRUE);
-            mqtt_publish_call_active(1);
-            prometheus_set_call_active(1);
-            usleep(500000);
-            started_panel_context = 1;
+            started_panel_context = ensure_intercom_call_open("snapshot");
+            if (started_panel_context < 0) {
+                goto done;
+            }
+            if (started_panel_context > 0) {
+                usleep(500000);
+            }
         } else {
             printf("Snapshot %s capturing without temporary panel context\n",
                    request.reason ? request.reason : "unknown");
@@ -1430,10 +1489,7 @@ stop_context:
         if (sip_calling_is_call_active()) {
             printf("Snapshot leaving panel context active because SIP call is active\n");
         } else {
-            intercom_send_command(INTERCOM_CMD_STOP_CALL);
-            set_call_active_status(PJ_FALSE);
-            mqtt_publish_call_active(0);
-            prometheus_set_call_active(0);
+            close_intercom_call("snapshot");
         }
     }
 
@@ -1551,11 +1607,153 @@ static int clamp_recording_max_seconds(int seconds) {
     return seconds;
 }
 
+static int normalize_sip_target_uri(const char* input, char* out, size_t out_size) {
+    const char* start;
+    const char* end;
+    size_t len;
+    size_t i;
+
+    if (!input || !out || out_size == 0) {
+        return -1;
+    }
+
+    start = input;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+    end = start + strlen(start);
+    while (end > start && isspace((unsigned char)*(end - 1))) {
+        end--;
+    }
+
+    len = (size_t)(end - start);
+    if (len == 0 || len >= out_size || len < 5 || strncmp(start, "sip:", 4) != 0) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)start[i];
+        if (iscntrl(c) || isspace(c)) {
+            return -1;
+        }
+    }
+
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return 0;
+}
+
+static void* ringing_timeout_thread_func(void* arg) {
+    ringing_timeout_request_t request;
+    int is_current;
+
+    if (!arg) {
+        return NULL;
+    }
+
+    request = *(ringing_timeout_request_t*)arg;
+    free(arg);
+
+    if (request.timeout_seconds <= 0) {
+        return NULL;
+    }
+
+    sleep((unsigned int)request.timeout_seconds);
+
+    pthread_mutex_lock(&ringing_timeout_mutex);
+    is_current = request.generation == ringing_timeout_generation;
+    pthread_mutex_unlock(&ringing_timeout_mutex);
+
+    if (!is_current || sip_calling_is_call_active()) {
+        return NULL;
+    }
+
+    printf("Ring timeout after %d seconds - returning media_state to idle\n",
+           request.timeout_seconds);
+    if (simulated_ding_panel_context_active) {
+        close_intercom_call("ring-timeout-simulated-ding");
+    }
+    mqtt_publish_ringing(0);
+    mqtt_publish_media_state("idle");
+    prometheus_set_ringing(0);
+    return NULL;
+}
+
+static void invalidate_ringing_timeout(const char* reason) {
+    pthread_mutex_lock(&ringing_timeout_mutex);
+    ringing_timeout_generation++;
+    pthread_mutex_unlock(&ringing_timeout_mutex);
+    PJ_LOG(3,(THIS_FILE, "Cancelled pending ringing timeout reason=%s",
+              reason ? reason : "unknown"));
+}
+
+static void schedule_ringing_timeout(int timeout_seconds) {
+    pthread_t thread;
+    ringing_timeout_request_t* request;
+
+    timeout_seconds = clamp_outgoing_call_timeout(timeout_seconds);
+    request = calloc(1, sizeof(*request));
+    if (!request) {
+        printf("Failed to allocate ringing timeout request\n");
+        return;
+    }
+
+    pthread_mutex_lock(&ringing_timeout_mutex);
+    ringing_timeout_generation++;
+    request->generation = ringing_timeout_generation;
+    pthread_mutex_unlock(&ringing_timeout_mutex);
+    request->timeout_seconds = timeout_seconds;
+
+    if (pthread_create(&thread, NULL, ringing_timeout_thread_func, request) != 0) {
+        printf("Failed to create ringing timeout thread\n");
+        free(request);
+        return;
+    }
+    pthread_detach(thread);
+}
+
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data) {
     (void)user_data;
     app_config.video_bitrate_kbps = clamp_video_bitrate(bitrate_kbps);
     printf("MQTT video_bitrate_kbps set to %d\n", app_config.video_bitrate_kbps);
     mqtt_publish_video_bitrate(app_config.video_bitrate_kbps);
+}
+
+static void mqtt_set_sip_outgoing_call_enabled_callback(int enabled, void* user_data) {
+    (void)user_data;
+
+    app_config.sip_outgoing_call_enabled = enabled ? 1 : 0;
+    printf("MQTT sip_outgoing_call_enabled set to %d\n",
+           app_config.sip_outgoing_call_enabled);
+    mqtt_publish_sip_outgoing_call_enabled(app_config.sip_outgoing_call_enabled);
+}
+
+static void mqtt_set_outgoing_call_target_callback(const char* target_uri, void* user_data) {
+    char normalized[sizeof(app_config.outgoing_call_target)];
+    pj_status_t status;
+    (void)user_data;
+
+    if (!ensure_pj_thread_registered("mqtt_callback")) {
+        return;
+    }
+
+    if (normalize_sip_target_uri(target_uri, normalized, sizeof(normalized)) != 0) {
+        printf("MQTT outgoing_call_target rejected: invalid SIP URI\n");
+        mqtt_publish_outgoing_call_target(app_config.outgoing_call_target);
+        return;
+    }
+
+    status = sip_calling_set_target_uri(normalized);
+    if (status != PJ_SUCCESS) {
+        printf("MQTT outgoing_call_target rejected: SIP core busy status=%d\n", status);
+        mqtt_publish_outgoing_call_target(app_config.outgoing_call_target);
+        return;
+    }
+
+    strncpy(app_config.outgoing_call_target, normalized,
+            sizeof(app_config.outgoing_call_target) - 1);
+    app_config.outgoing_call_target[sizeof(app_config.outgoing_call_target) - 1] = '\0';
+    printf("MQTT outgoing_call_target set to %s\n", app_config.outgoing_call_target);
+    mqtt_publish_outgoing_call_target(app_config.outgoing_call_target);
 }
 
 static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data) {
@@ -1613,6 +1811,7 @@ static void handle_audio_test_control(const char* message) {
     char ip[64];
     int port;
     int seconds;
+    int started_panel_context;
 
     if (sscanf(message, "%63s %d %d", ip, &port, &seconds) != 3 ||
         port <= 0 || seconds <= 0 || seconds > 30) {
@@ -1627,14 +1826,19 @@ static void handle_audio_test_control(const char* message) {
 
     PJ_LOG(3,(THIS_FILE, "AUDIO_TEST starting to %s:%d for %d seconds",
               ip, port, seconds));
-    intercom_send_command(INTERCOM_CMD_START_CALL);
-    set_call_active_status(PJ_TRUE);
-    usleep(500000);
+    started_panel_context = ensure_intercom_call_open("audio-test");
+    if (started_panel_context < 0) {
+        return;
+    }
+    if (started_panel_context > 0) {
+        usleep(500000);
+    }
     start_audio_session(ip, port);
     sleep((unsigned)seconds);
     stop_audio_session();
-    intercom_send_command(INTERCOM_CMD_STOP_CALL);
-    set_call_active_status(PJ_FALSE);
+    if (started_panel_context > 0) {
+        close_intercom_call("audio-test");
+    }
     PJ_LOG(3,(THIS_FILE, "AUDIO_TEST complete"));
 }
 
@@ -1642,6 +1846,7 @@ static void handle_video_test_control(const char* message) {
     char ip[64];
     int port;
     int seconds;
+    int started_panel_context;
 
     if (sscanf(message, "%63s %d %d", ip, &port, &seconds) != 3 ||
         port <= 0 || seconds <= 0 || seconds > 30) {
@@ -1656,20 +1861,41 @@ static void handle_video_test_control(const char* message) {
 
     PJ_LOG(3,(THIS_FILE, "VIDEO_TEST starting to %s:%d for %d seconds",
               ip, port, seconds));
-    intercom_send_command(INTERCOM_CMD_START_CALL);
-    usleep(500000);
+    started_panel_context = ensure_intercom_call_open("video-test");
+    if (started_panel_context < 0) {
+        return;
+    }
+    if (started_panel_context > 0) {
+        usleep(500000);
+    }
     start_video_session(ip, port);
     sleep((unsigned)seconds);
     stop_video_session();
-    intercom_send_command(INTERCOM_CMD_STOP_CALL);
+    if (started_panel_context > 0) {
+        close_intercom_call("video-test");
+    }
     PJ_LOG(3,(THIS_FILE, "VIDEO_TEST complete"));
+}
+
+static void handle_simulated_ding_trigger(void) {
+    int start_result;
+
+    PJ_LOG(3,(THIS_FILE, "Simulated DING - opening panel context before native ring path"));
+    mute_audio_input_for_ms(app_config.audio_line_mute_ms, "simulated-ding-start");
+    start_result = ensure_intercom_call_open("simulated-ding");
+    if (start_result < 0) {
+        return;
+    }
+    if (start_result > 0) {
+        simulated_ding_panel_context_active = 1;
+    }
+
+    handle_ding_trigger("serial alarm");
 }
 
 static void handle_ding_trigger(const char* source) {
     pj_status_t status;
     int is_serial_alarm = source && strcmp(source, "serial alarm") == 0;
-    int needs_simulated_panel_context =
-        source && strcmp(source, "pipe") == 0;
 
     PJ_LOG(3,(THIS_FILE, "DING detected from %s - checking if we can make outgoing call",
               source ? source : "unknown"));
@@ -1683,22 +1909,15 @@ static void handle_ding_trigger(const char* source) {
     mqtt_publish_media_state("ringing");
     prometheus_set_ringing(1);
     prometheus_inc_ring();
-
-    if (needs_simulated_panel_context && !simulated_ding_panel_context_active) {
-        PJ_LOG(3,(THIS_FILE, "DING from pipe - opening simulated panel context"));
-        mute_audio_input_for_ms(app_config.audio_line_mute_ms, "simulated-ding-start");
-        intercom_send_command(INTERCOM_CMD_START_CALL);
-        simulated_ding_panel_context_active = 1;
-        set_call_active_status(PJ_TRUE);
-        mqtt_publish_call_active(1);
-        prometheus_set_call_active(1);
-    }
+    schedule_ringing_timeout(app_config.outgoing_call_timeout);
 
     if (is_serial_alarm) {
         start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring", 1);
-    } else if (needs_simulated_panel_context) {
-        start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms,
-                               "pipe-ring", 1);
+    }
+
+    if (!app_config.sip_outgoing_call_enabled) {
+        PJ_LOG(3,(THIS_FILE, "Outgoing SIP call disabled - keeping media_state=ringing only"));
+        return;
     }
 
     PJ_LOG(3,(THIS_FILE, "Making outgoing call due to %s", source ? source : "DING"));
@@ -1706,11 +1925,7 @@ static void handle_ding_trigger(const char* source) {
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to make outgoing call: %d", status));
         if (simulated_ding_panel_context_active) {
-            intercom_send_command(INTERCOM_CMD_STOP_CALL);
-            simulated_ding_panel_context_active = 0;
-            set_call_active_status(PJ_FALSE);
-            mqtt_publish_call_active(0);
-            prometheus_set_call_active(0);
+            close_intercom_call("simulated-ding-call-failed");
         }
     }
 }
@@ -1772,7 +1987,7 @@ static void handle_control_message(const char* message) {
     unsigned char frame[4];
 
     if (strncmp(message, app_config.ding_message, strlen(app_config.ding_message)) == 0) {
-        handle_ding_trigger("pipe");
+        handle_simulated_ding_trigger();
         return;
     }
 
@@ -1913,7 +2128,7 @@ typedef enum {
     UART_CODE_START_CALL,
     UART_CODE_HANG_UP_0,
     UART_CODE_HANG_UP_1,
-    UART_CODE_CMD_STOP_RING,
+    UART_CODE_PHYSICAL_HANDSET_ANSWERED,
     UART_CODE_PUSH_STATE_0,
     UART_CODE_PUSH_STATE_1,
     UART_CODE_MCU_STATE_0,
@@ -1935,7 +2150,10 @@ static const uart_code_def_t uart_codes[] = {
     {UART_CODE_START_CALL,      "START_CALL",      "start_call",      {0xFB, 0x14, 0x01, 0x20}},
     {UART_CODE_HANG_UP_0,       "HANG_UP_0",       "hang_up_0",       {0xFB, 0x13, 0x00, 0x1E}},
     {UART_CODE_HANG_UP_1,       "HANG_UP_1",       "hang_up_1",       {0xFB, 0x13, 0x01, 0x1F}},
-    {UART_CODE_CMD_STOP_RING,   "CMD_STOP_RING",   "cmd_stop_ring",   {0xFB, 0x23, 0x00, 0x2E}},
+    {UART_CODE_PHYSICAL_HANDSET_ANSWERED,
+     "PHYSICAL_HANDSET_ANSWERED",
+     "physical_handset_answered",
+     {0xFB, 0x23, 0x00, 0x2E}},
     {UART_CODE_PUSH_STATE_0,    "PUSH_STATE_0",    "push_state_0",    {0xFB, 0x19, 0x00, 0x24}},
     {UART_CODE_PUSH_STATE_1,    "PUSH_STATE_1",    "push_state_1",    {0xFB, 0x19, 0x01, 0x25}},
     {UART_CODE_MCU_STATE_0,     "MCU_STATE_0",     "mcu_state_0",     {0xFB, 0x16, 0x00, 0x21}},
@@ -2024,17 +2242,22 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_HANG_UP_1:
         prometheus_inc_uart_hangup();
         report_alarm_event(2);
-        set_call_active_status(PJ_FALSE);
+        invalidate_ringing_timeout(def->name);
+        clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        prometheus_set_ringing(0);
         terminate_call_from_serial(def->name);
         break;
-    case UART_CODE_CMD_STOP_RING:
+    case UART_CODE_PHYSICAL_HANDSET_ANSWERED:
         prometheus_inc_uart_stop_ring();
         report_alarm_event(3);
-        set_call_active_status(PJ_FALSE);
+        PJ_LOG(3,(THIS_FILE, "Physical handset answered - ending remote ringing state"));
+        invalidate_ringing_timeout(def->name);
+        clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        prometheus_set_ringing(0);
         terminate_call_from_serial(def->name);
         break;
     case UART_CODE_CMD_RESET:
@@ -2718,6 +2941,8 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.simulate_ding = mqtt_simulate_ding_callback;
     mqtt_callbacks.set_video_enabled = mqtt_set_video_enabled_callback;
     mqtt_callbacks.set_video_bitrate = mqtt_set_video_bitrate_callback;
+    mqtt_callbacks.set_sip_outgoing_call_enabled = mqtt_set_sip_outgoing_call_enabled_callback;
+    mqtt_callbacks.set_outgoing_call_target = mqtt_set_outgoing_call_target_callback;
     mqtt_callbacks.set_outgoing_call_timeout = mqtt_set_outgoing_call_timeout_callback;
     mqtt_callbacks.set_ring_snapshot_delay = mqtt_set_ring_snapshot_delay_callback;
     mqtt_callbacks.set_call_forward_enabled = mqtt_set_call_forward_enabled_callback;
@@ -2846,7 +3071,9 @@ int main(int argc, char *argv[]) {
 
     printf("Wibox SIP client ready. Listening on %s:%d, RTP on %s:%d\n",
            local_ip, app_config.sip_port, local_ip, app_config.rtp_port);
-    printf("Will make outgoing calls to: %s\n", app_config.outgoing_call_target);
+    printf("Outgoing SIP calls: %s, target: %s\n",
+           app_config.sip_outgoing_call_enabled ? "enabled" : "disabled",
+           app_config.outgoing_call_target);
     printf("Send '%s' to %s to trigger outgoing call\n", app_config.ding_message, app_config.sip_listen_pipe);
 
     // Main event loop

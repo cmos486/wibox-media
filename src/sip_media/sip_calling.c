@@ -69,6 +69,22 @@ void sip_calling_set_call_timeout(int timeout_seconds) {
     printf("sip_calling: outgoing call timeout set to %d seconds\n", config.call_timeout_seconds);
 }
 
+pj_status_t sip_calling_set_target_uri(const char* target_uri) {
+    if (!target_uri || !target_uri[0]) {
+        return PJ_EINVAL;
+    }
+    if (current_session.state != SIP_CALL_STATE_IDLE) {
+        printf("sip_calling: target URI update rejected while call state=%d\n",
+               current_session.state);
+        return PJ_EBUSY;
+    }
+
+    strncpy(config.target_uri, target_uri, sizeof(config.target_uri) - 1);
+    config.target_uri[sizeof(config.target_uri) - 1] = '\0';
+    printf("sip_calling: outgoing call target set to %s\n", config.target_uri);
+    return PJ_SUCCESS;
+}
+
 void sip_calling_set_video_config(int local_video_rtp_port, int video_payload_type) {
     config.local_video_rtp_port = local_video_rtp_port > 0 ? local_video_rtp_port : 0;
     if (video_payload_type > 0 && video_payload_type < 128) {

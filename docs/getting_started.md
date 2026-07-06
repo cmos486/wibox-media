@@ -165,6 +165,7 @@ Edit:
 Important options:
 
 ```ini
+sip_outgoing_call_enabled=1
 outgoing_call_target=sip:1000@192.168.0.31:5060
 mqtt_enabled=1
 mqtt_host=192.168.0.203

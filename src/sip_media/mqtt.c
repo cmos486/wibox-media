@@ -42,6 +42,8 @@ typedef struct {
     int rtsp_enabled;
     int developer_mode_enabled;
     int video_bitrate_kbps;
+    int sip_outgoing_call_enabled;
+    char outgoing_call_target[256];
     int outgoing_call_timeout;
     int ring_snapshot_delay_ms;
     int call_forward_enabled;
@@ -596,7 +598,7 @@ static void publish_uart_event_config(void) {
              "\"event_types\":[\"raw_read\",\"alarm_report\",\"cmd_reset\","
              "\"unlock_door\",\"start_call\",\"stop_call\",\"enable_push_state\","
              "\"disable_push_state\",\"f1_on\",\"f1_off\",\"hang_up_0\","
-             "\"hang_up_1\",\"cmd_stop_ring\",\"push_state_0\",\"push_state_1\","
+             "\"hang_up_1\",\"physical_handset_answered\",\"push_state_0\",\"push_state_1\","
              "\"mcu_state_0\",\"mcu_state_1\",\"cmd_down_long_1\","
              "\"cmd_down_long_2\",\"unknown_fb\"],"
              "\"icon\":\"mdi:serial-port\",%s}",
@@ -637,6 +639,57 @@ static void publish_number_config(const char* object_id, const char* name,
              "\"retain\":true,\"availability_topic\":\"%s\",%s%s%s}",
              name, uid, state_topic, command_topic, min, max, step,
              mqtt_state.base_topic, unit_part, icon_part, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_outgoing_call_target_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char availability_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[2048];
+
+    discovery_topic(topic, sizeof(topic), "text", "outgoing_call_target");
+    topic_path(state_topic, sizeof(state_topic), "call/target_uri");
+    snprintf(command_topic, sizeof(command_topic), "%s/%s/set",
+             mqtt_state.base_topic, "call/target_uri");
+    topic_path(availability_topic, sizeof(availability_topic), "call/outgoing_config/availability");
+    unique_id(uid, sizeof(uid), "outgoing_call_target");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Outgoing Call Target\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"mode\":\"text\",\"max\":255,\"retain\":true,"
+             "\"availability_topic\":\"%s\",\"icon\":\"mdi:phone-dial\",%s}",
+             uid, state_topic, command_topic, availability_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_outgoing_call_timeout_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[2048];
+
+    discovery_topic(topic, sizeof(topic), "number", "outgoing_call_timeout");
+    topic_path(state_topic, sizeof(state_topic), "call/timeout_seconds");
+    snprintf(command_topic, sizeof(command_topic), "%s/%s/set",
+             mqtt_state.base_topic, "call/timeout_seconds");
+    unique_id(uid, sizeof(uid), "outgoing_call_timeout");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Outgoing Call Timeout\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"min\":10,\"max\":120,\"step\":5,\"mode\":\"slider\","
+             "\"retain\":true,\"availability_topic\":\"%s\","
+             "\"unit_of_measurement\":\"s\",\"icon\":\"mdi:timer-outline\",%s}",
+             uid, state_topic, command_topic, mqtt_state.base_topic, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
 
@@ -892,6 +945,29 @@ static void publish_rtsp_switch_config(void) {
              "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
              "\"availability_topic\":\"%s\",\"payload_on\":\"ON\","
              "\"payload_off\":\"OFF\",\"retain\":true,\"icon\":\"mdi:cctv\",%s}",
+             uid, state_topic, command_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_sip_outgoing_call_switch_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "switch", "sip_outgoing_call_enabled");
+    topic_path(state_topic, sizeof(state_topic), "call/outgoing_enabled");
+    topic_path(command_topic, sizeof(command_topic), "call/outgoing_enabled/set");
+    unique_id(uid, sizeof(uid), "sip_outgoing_call_enabled");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"SIP Outgoing Call Enabled\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"availability_topic\":\"%s\",\"payload_on\":\"ON\","
+             "\"payload_off\":\"OFF\",\"retain\":true,\"icon\":\"mdi:phone-outgoing\",%s}",
              uid, state_topic, command_topic, mqtt_state.base_topic, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
@@ -1153,10 +1229,11 @@ void mqtt_publish_discovery(void) {
     publish_sensor_config("wifi_rssi", "WiFi RSSI", "wifi/rssi", "signal_strength", "wifi");
     publish_video_switch_config();
     publish_rtsp_switch_config();
+    publish_sip_outgoing_call_switch_config();
     publish_number_config("video_bitrate", "Video Bitrate", "video/bitrate_kbps",
                           512, 4096, 256, "kbps", "video-high-definition");
-    publish_number_config("outgoing_call_timeout", "Outgoing Call Timeout",
-                          "call/timeout_seconds", 10, 120, 5, "s", "timer-outline");
+    publish_outgoing_call_target_config();
+    publish_outgoing_call_timeout_config();
     publish_number_config("ring_snapshot_delay", "Ring Snapshot Delay",
                           "snapshot/ring_delay_ms", 0, 5000, 500, "ms", "timer-outline");
     publish_call_forward_switch_config();
@@ -1203,6 +1280,23 @@ void mqtt_publish_video_bitrate(int bitrate_kbps) {
     mqtt_state.video_bitrate_kbps = bitrate_kbps;
     snprintf(value, sizeof(value), "%d", bitrate_kbps);
     publish_suffix("video/bitrate_kbps", value, 1);
+}
+
+void mqtt_publish_sip_outgoing_call_enabled(int enabled) {
+    mqtt_state.sip_outgoing_call_enabled = enabled ? 1 : 0;
+    publish_suffix("call/outgoing_enabled",
+                   mqtt_state.sip_outgoing_call_enabled ? "ON" : "OFF", 1);
+    publish_suffix("call/outgoing_config/availability",
+                   mqtt_state.sip_outgoing_call_enabled ? "online" : "offline", 1);
+}
+
+void mqtt_publish_outgoing_call_target(const char* target_uri) {
+    const char* value = target_uri ? target_uri : "";
+
+    strncpy(mqtt_state.outgoing_call_target, value,
+            sizeof(mqtt_state.outgoing_call_target) - 1);
+    mqtt_state.outgoing_call_target[sizeof(mqtt_state.outgoing_call_target) - 1] = '\0';
+    publish_suffix("call/target_uri", mqtt_state.outgoing_call_target, 1);
 }
 
 void mqtt_publish_outgoing_call_timeout(int timeout_seconds) {
@@ -1487,6 +1581,24 @@ static void handle_mqtt_message(const char* topic, const char* payload, int reta
         return;
     }
 
+    topic_path(expected, sizeof(expected), "call/outgoing_enabled/set");
+    if (strcmp(topic, expected) == 0) {
+        if (payload_is_on(payload) && mqtt_state.callbacks.set_sip_outgoing_call_enabled) {
+            mqtt_state.callbacks.set_sip_outgoing_call_enabled(1, mqtt_state.user_data);
+        } else if (payload_is_off(payload) && mqtt_state.callbacks.set_sip_outgoing_call_enabled) {
+            mqtt_state.callbacks.set_sip_outgoing_call_enabled(0, mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "call/target_uri/set");
+    if (strcmp(topic, expected) == 0) {
+        if (mqtt_state.callbacks.set_outgoing_call_target) {
+            mqtt_state.callbacks.set_outgoing_call_target(payload, mqtt_state.user_data);
+        }
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "call/timeout_seconds/set");
     if (strcmp(topic, expected) == 0) {
         if (parse_int_payload(payload, &int_value) == 0 &&
@@ -1557,6 +1669,8 @@ static int mqtt_subscribe_topics(void) {
         "video/enabled/set",
         "rtsp/enabled/set",
         "video/bitrate_kbps/set",
+        "call/outgoing_enabled/set",
+        "call/target_uri/set",
         "call/timeout_seconds/set",
         "call_forward/enabled/set",
         "firmware/update/install/set",
@@ -1690,6 +1804,8 @@ static void* mqtt_thread_func(void* arg) {
         mqtt_publish_rtsp_enabled(mqtt_state.rtsp_enabled);
         mqtt_publish_developer_mode(0);
         mqtt_publish_video_bitrate(mqtt_state.video_bitrate_kbps);
+        mqtt_publish_sip_outgoing_call_enabled(mqtt_state.sip_outgoing_call_enabled);
+        mqtt_publish_outgoing_call_target(mqtt_state.outgoing_call_target);
         mqtt_publish_outgoing_call_timeout(mqtt_state.outgoing_call_timeout);
         mqtt_publish_ring_snapshot_delay(mqtt_state.ring_snapshot_delay_ms);
         mqtt_publish_call_forward_enabled(mqtt_state.call_forward_enabled);
@@ -1750,6 +1866,9 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
     mqtt_state.rtsp_enabled = app_config->rtsp_enabled;
     mqtt_state.developer_mode_enabled = 0;
     mqtt_state.video_bitrate_kbps = app_config->video_bitrate_kbps;
+    mqtt_state.sip_outgoing_call_enabled = app_config->sip_outgoing_call_enabled ? 1 : 0;
+    strncpy(mqtt_state.outgoing_call_target, app_config->outgoing_call_target,
+            sizeof(mqtt_state.outgoing_call_target) - 1);
     mqtt_state.outgoing_call_timeout = app_config->outgoing_call_timeout;
     mqtt_state.ring_snapshot_delay_ms = app_config->ring_snapshot_delay_ms;
     mqtt_state.call_forward_enabled = app_config->serial_listener_enabled ? 1 : 0;

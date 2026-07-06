@@ -92,6 +92,11 @@ void sip_calling_set_callbacks(sip_call_state_callback_t state_cb,
 void sip_calling_set_call_timeout(int timeout_seconds);
 
 /**
+ * Update target SIP URI for future outgoing calls.
+ */
+pj_status_t sip_calling_set_target_uri(const char* target_uri);
+
+/**
  * Update local video SDP settings for future SIP offers/answers.
  */
 void sip_calling_set_video_config(int local_video_rtp_port, int video_payload_type);
