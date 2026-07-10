@@ -286,17 +286,20 @@ Commands sent by the daemon are published on the same topics with
 `direction: "out"`, for example `START_CALL`, `STOP_CALL`, `UNLOCK_DOOR` and
 `ENABLE_PUSH_STATE`.
 
-The `codex/uart-init-experiments` branch also sends the Sofia-observed UART
-initialization probes once after the serial monitor opens `/dev/ttySGK1`:
+The daemon deliberately does not reproduce the Sofia `FB 10 xx` traffic:
 
 ```text
-SOFIA_UART_SET_MODE   FB 10 00 1B
-SOFIA_UART_START      FB 10 04 1F
-SOFIA_UART_POST_INIT  FB 10 5E 79
+FB 10 00 1B
+FB 10 04 1F
+FB 10 5E 79
 ```
 
-Those probes are experimental and intended to check whether the MCU starts
-emitting additional events such as `CMD_DOWN_LONG_1` / `CMD_DOWN_LONG_2`.
+Reverse engineering shows that Sofia registers its UART receiver and schedules
+a `SysUpToMcu` callback every 2000 ms. That callback sends an `FB 10 <state>`
+frame whose state byte is mutable. Its practical purpose is not proven and the
+current product flow does not need it, so sending one-shot probes or a periodic
+heartbeat would add hardware risk without a demonstrated benefit. See
+`research/SOFIA_HARDWARE_INTERACTIONS.md`.
 
 Real outside-panel calls must arrive as `ALARM_REPORT`. If pressing the physical
 WiBox forward button only produces `PUSH_STATE_0` / `PUSH_STATE_1`, that only

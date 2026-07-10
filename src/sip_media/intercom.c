@@ -23,9 +23,6 @@ static intercom_command_def_t command_defs[] = {
     {INTERCOM_CMD_DISABLE_PUSH_STATE,"DISABLE_PUSH_STATE","disable_push_state", {0xFB, 0x19, 0x00, 0x24}},
     {INTERCOM_CMD_F1_ON,             "F1_ON",             "f1_on",              {0xFB, 0x17, 0x01, 0x23}},
     {INTERCOM_CMD_F1_OFF,            "F1_OFF",            "f1_off",             {0xFB, 0x17, 0x00, 0x22}},
-    {INTERCOM_CMD_SOFIA_UART_SET_MODE,"SOFIA_UART_SET_MODE","sofia_uart_set_mode",{0xFB, 0x10, 0x00, 0x1B}},
-    {INTERCOM_CMD_SOFIA_UART_START,  "SOFIA_UART_START",  "sofia_uart_start",   {0xFB, 0x10, 0x04, 0x1F}},
-    {INTERCOM_CMD_SOFIA_UART_POST_INIT,"SOFIA_UART_POST_INIT","sofia_uart_post_init",{0xFB, 0x10, 0x5E, 0x79}},
 };
 
 #define NUM_COMMANDS (sizeof(command_defs) / sizeof(command_defs[0]))
