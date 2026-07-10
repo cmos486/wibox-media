@@ -85,7 +85,7 @@ network={
 On your computer, download the latest GitHub Release image:
 
 ```bash
-VERSION="v0.13.0"  # x-release-please-version
+VERSION="v0.14.0"  # x-release-please-version
 wget -O wibox-media.img "https://github.com/segator/wibox-media/releases/download/${VERSION}/wibox-media-${VERSION}.img"
 ```
 
@@ -165,6 +165,7 @@ Edit:
 Important options:
 
 ```ini
+sip_outgoing_call_enabled=1
 outgoing_call_target=sip:1000@192.168.0.31:5060
 mqtt_enabled=1
 mqtt_host=192.168.0.203

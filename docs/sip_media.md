@@ -19,6 +19,7 @@ Default config in the image:
 Key options:
 
 ```ini
+sip_outgoing_call_enabled=1
 outgoing_call_target=sip:1000@192.168.0.31:5060
 outgoing_call_timeout=60
 sip_port=5060
@@ -71,7 +72,13 @@ you need stable custom names. The daemon derives them from the WiBox hostname.
 
 ## SIP And Media
 
-Outgoing doorbell calls are sent to `outgoing_call_target`.
+Doorbell presses always publish `media/state = ringing`. When
+`sip_outgoing_call_enabled=1`, the daemon also sends an outgoing SIP INVITE to
+`outgoing_call_target`. When it is `0`, the daemon skips the automatic SIP call
+so Home Assistant automations can notify first and a user can call back into the
+WiBox manually. `outgoing_call_timeout` is the generic ring/call-attempt
+timeout: it returns `media/state` from `ringing` to `idle` if no SIP call is
+active when the timeout expires.
 
 The daemon advertises:
 
@@ -265,8 +272,8 @@ Example payload:
 
 ```json
 {
-  "event_type": "cmd_stop_ring",
-  "alias": "CMD_STOP_RING",
+  "event_type": "physical_handset_answered",
+  "alias": "PHYSICAL_HANDSET_ANSWERED",
   "raw": "FB 23 00 2E",
   "direction": "in",
   "param": 0,
