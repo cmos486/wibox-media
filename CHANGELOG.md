@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/segator/wibox-media/compare/v0.15.0...v0.16.0) (2026-07-11)
+
+
+### Features
+
+* add MQTT device reboot button ([8f2d1ba](https://github.com/segator/wibox-media/commit/8f2d1ba3e0e7a93d967301d603ffc2dc53a81a30))
+
+
+### Bug Fixes
+
+* label watchdog log rotator process ([e23e13b](https://github.com/segator/wibox-media/commit/e23e13b000a7281f99c2cdc1aaa79e21148708c0))
+
 ## [0.15.0](https://github.com/segator/wibox-media/compare/v0.14.0...v0.15.0) (2026-07-11)
 
 
