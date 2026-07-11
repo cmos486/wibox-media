@@ -30,6 +30,11 @@ mkdir -p "$LOG_DIR"
 
 # Background log rotation function
 log_rotator() {
+    # A background shell function inherits the parent script name. Give this
+    # helper a distinct process name so it cannot be mistaken for a second
+    # application watchdog in ps/process monitoring.
+    printf '%s\n' "wibox-logrotate" > /proc/self/comm 2>/dev/null || true
+
     while true; do
         sleep 300  # Check every 5 minutes
 
