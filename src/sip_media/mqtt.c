@@ -52,6 +52,7 @@ typedef struct {
     char firmware_update_version[64];
     int firmware_update_available;
     int firmware_update_installing;
+    int reboot_requested;
     time_t firmware_update_last_check;
     mqtt_callbacks_t callbacks;
     void* user_data;
@@ -733,6 +734,35 @@ static void publish_f1_button_config(void) {
     mqtt_publish_raw(topic, payload, 1);
 }
 
+static void publish_reboot_button_availability(void) {
+    publish_suffix("system/reboot/availability",
+                   mqtt_state.reboot_requested ? "offline" : "online", 1);
+}
+
+static void publish_reboot_button_config(void) {
+    char topic[256];
+    char command_topic[256];
+    char availability_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "button", "reboot_device");
+    topic_path(command_topic, sizeof(command_topic), "system/reboot/set");
+    topic_path(availability_topic, sizeof(availability_topic),
+               "system/reboot/availability");
+    unique_id(uid, sizeof(uid), "reboot_device");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Reboot Device\",\"unique_id\":\"%s\","
+             "\"command_topic\":\"%s\",\"payload_press\":\"PRESS\","
+             "\"availability_topic\":\"%s\",\"entity_category\":\"config\","
+             "\"icon\":\"mdi:restart\",%s}",
+             uid, command_topic, availability_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_developer_simulate_ding_button_config(void) {
     char topic[256];
     char command_topic[256];
@@ -1215,6 +1245,7 @@ void mqtt_publish_discovery(void) {
     }
     publish_button_config();
     publish_f1_button_config();
+    publish_reboot_button_config();
     publish_developer_mode_switch_config();
     publish_developer_simulate_ding_button_config();
     publish_snapshot_button_config();
@@ -1552,6 +1583,32 @@ static void handle_mqtt_message(const char* topic, const char* payload, int reta
         return;
     }
 
+    topic_path(expected, sizeof(expected), "system/reboot/set");
+    if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
+        if (!payload_is_on(payload)) {
+            return;
+        }
+        if (mqtt_state.reboot_requested) {
+            printf("%s: reboot already requested, ignoring duplicate request\n", MQTT_FILE);
+            return;
+        }
+        if (!mqtt_state.callbacks.reboot_device) {
+            printf("%s: reboot requested but no device reboot callback is configured\n",
+                   MQTT_FILE);
+            return;
+        }
+
+        mqtt_state.reboot_requested = 1;
+        publish_reboot_button_availability();
+        printf("%s: device reboot requested\n", MQTT_FILE);
+        mqtt_state.callbacks.reboot_device(mqtt_state.user_data);
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "video/enabled/set");
     if (strcmp(topic, expected) == 0) {
         if (payload_is_on(payload) && mqtt_state.callbacks.set_video_enabled) {
@@ -1662,6 +1719,7 @@ static int mqtt_subscribe_topics(void) {
     static const char* command_suffixes[] = {
         "door/open/set",
         "f1/trigger/set",
+        "system/reboot/set",
         "developer/mode/set",
         "developer/simulate_ding/set",
         "snapshot/take/set",
@@ -1799,6 +1857,7 @@ static void* mqtt_thread_func(void* arg) {
             firmware_update_check_and_publish();
         }
         publish_suffix("door/unlocked", "OFF", 1);
+        publish_reboot_button_availability();
         mqtt_publish_snapshot_available(mqtt_state.video_enabled);
         mqtt_publish_video_enabled(mqtt_state.video_enabled);
         mqtt_publish_rtsp_enabled(mqtt_state.rtsp_enabled);
@@ -1877,6 +1936,7 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
             sizeof(mqtt_state.firmware_update_repo) - 1);
     mqtt_state.firmware_update_last_check = 0;
     mqtt_state.firmware_update_installing = 0;
+    mqtt_state.reboot_requested = 0;
 
     get_hostname(hostname, sizeof(hostname));
     if (app_config->mqtt_device_id[0]) {

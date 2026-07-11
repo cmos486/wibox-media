@@ -7,6 +7,7 @@
 typedef struct {
     void (*open_door)(void* user_data);
     void (*trigger_f1)(void* user_data);
+    void (*reboot_device)(void* user_data);
     void (*take_snapshot)(void* user_data);
     void (*simulate_ding)(void* user_data);
     void (*set_video_enabled)(int enabled, void* user_data);

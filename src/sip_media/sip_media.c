@@ -11,6 +11,7 @@
 #include <arpa/inet.h>       // Internet operations
 #include <termios.h>         // Serial raw mode
 #include <sys/wait.h>        // Child process cleanup
+#include <sys/reboot.h>      // System reboot
 #include <fcntl.h>           // File control
 #include <pthread.h>         // POSIX threads
 #include <ifaddrs.h>         // For getifaddrs()
@@ -78,6 +79,8 @@ static int current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int snapshot_active = 0;
 static int simulated_ding_panel_context_active = 0;
+static pthread_mutex_t reboot_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int reboot_requested = 0;
 static pthread_mutex_t intercom_command_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t intercom_reopen_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static long long intercom_last_close_ms = 0;
@@ -229,6 +232,7 @@ static void clear_intercom_call_state(const char* reason);
 static int close_intercom_call(const char* reason);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
+static void mqtt_reboot_device_callback(void* user_data);
 static void mqtt_take_snapshot_callback(void* user_data);
 static void mqtt_simulate_ding_callback(void* user_data);
 static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
@@ -1366,6 +1370,27 @@ static void mqtt_trigger_f1_callback(void* user_data) {
         intercom_send_command(INTERCOM_CMD_F1_OFF);
     } else {
         printf("Failed to trigger F1 function\n");
+    }
+}
+
+static void mqtt_reboot_device_callback(void* user_data) {
+    int already_requested;
+
+    (void)user_data;
+    pthread_mutex_lock(&reboot_mutex);
+    already_requested = reboot_requested;
+    reboot_requested = 1;
+    pthread_mutex_unlock(&reboot_mutex);
+
+    if (already_requested) {
+        printf("MQTT device reboot already requested, ignoring duplicate callback\n");
+        return;
+    }
+
+    printf("MQTT device reboot accepted; syncing filesystems\n");
+    sync();
+    if (reboot(RB_AUTOBOOT) != 0) {
+        printf("MQTT device reboot failed: %s\n", strerror(errno));
     }
 }
 
@@ -3026,6 +3051,7 @@ int main(int argc, char *argv[]) {
     memset(&mqtt_callbacks, 0, sizeof(mqtt_callbacks));
     mqtt_callbacks.open_door = mqtt_open_door_callback;
     mqtt_callbacks.trigger_f1 = mqtt_trigger_f1_callback;
+    mqtt_callbacks.reboot_device = mqtt_reboot_device_callback;
     mqtt_callbacks.take_snapshot = mqtt_take_snapshot_callback;
     mqtt_callbacks.simulate_ding = mqtt_simulate_ding_callback;
     mqtt_callbacks.set_video_enabled = mqtt_set_video_enabled_callback;

@@ -311,6 +311,7 @@ Commands:
 ```text
 wibox/<hostname>/door/open/set = PRESS
 wibox/<hostname>/f1/trigger/set = PRESS
+wibox/<hostname>/system/reboot/set = PRESS
 wibox/<hostname>/developer/mode/set = ON|OFF
 wibox/<hostname>/developer/simulate_ding/set = PRESS
 wibox/<hostname>/snapshot/take/set = PRESS
@@ -392,9 +393,14 @@ The daemon republishes the accepted/clamped state separately.
 
 Retained MQTT messages are only accepted for configuration topics. Retained
 button/action topics such as `door/open/set`, `snapshot/take/set`,
-`firmware/update/check/set` and `firmware/update/install/set` are ignored so a
-broker reconnect or daemon restart cannot replay a door unlock, snapshot or
-firmware update.
+`system/reboot/set`, `firmware/update/check/set` and `firmware/update/install/set`
+are ignored so a broker reconnect or daemon restart cannot replay a door unlock,
+snapshot, device reboot or firmware update.
+
+`system/reboot/set` is exposed as the `Reboot Device` Home Assistant button.
+After one non-retained `PRESS` is accepted, its availability is immediately
+published as `offline` and duplicate requests are ignored until the device has
+rebooted. The daemon performs `sync()` before requesting the system reboot.
 
 Video resolution is not exposed over MQTT because only D1 `688x576` is currently
 validated. If more modes are added, they should be exposed as a closed MQTT
