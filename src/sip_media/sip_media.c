@@ -28,6 +28,7 @@
 #include "audio_hw.h"        // Direct GADI audio hardware access
 #include "video_worker.h"    // In-daemon D1 H.264 RTP worker
 #include "rtsp_stream.h"     // Optional RTSP camera stream
+#include "hardware_watchdog.h" // Main-loop-aware hardware watchdog
 
 #define THIS_FILE "wibox-media-daemon"
 #define CONFIG_FILE "/mnt/mtd/sip_media.conf"
@@ -77,6 +78,10 @@ static int current_dtmf_payload_type = RTP_PAYLOAD_DTMF;
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int snapshot_active = 0;
 static int simulated_ding_panel_context_active = 0;
+static pthread_mutex_t intercom_command_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t intercom_reopen_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+static long long intercom_last_close_ms = 0;
+static char intercom_last_close_reason[64] = "none";
 static char local_ip_addr[64] = "0.0.0.0";
 
 typedef struct {
@@ -1221,23 +1226,85 @@ static void unlock_door(const char* source) {
     }
 }
 
+static void record_intercom_close(const char* reason) {
+    pthread_mutex_lock(&intercom_reopen_state_mutex);
+    intercom_last_close_ms = now_ms();
+    snprintf(intercom_last_close_reason, sizeof(intercom_last_close_reason),
+             "%s", reason ? reason : "unknown");
+    pthread_mutex_unlock(&intercom_reopen_state_mutex);
+}
+
+static void wait_for_intercom_reopen_guard(const char* reason) {
+    long long last_close_ms;
+    long long elapsed_ms;
+    int wait_ms;
+    char close_reason[64];
+
+    if (app_config.intercom_reopen_guard_ms <= 0) {
+        return;
+    }
+
+    pthread_mutex_lock(&intercom_reopen_state_mutex);
+    last_close_ms = intercom_last_close_ms;
+    snprintf(close_reason, sizeof(close_reason), "%s",
+             intercom_last_close_reason);
+    pthread_mutex_unlock(&intercom_reopen_state_mutex);
+
+    if (last_close_ms <= 0) {
+        return;
+    }
+
+    elapsed_ms = now_ms() - last_close_ms;
+    if (elapsed_ms < 0) {
+        elapsed_ms = 0;
+    }
+    wait_ms = app_config.intercom_reopen_guard_ms - (int)elapsed_ms;
+    if (wait_ms <= 0) {
+        return;
+    }
+
+    PJ_LOG(3,(THIS_FILE,
+              "Intercom reopen guard waiting %d ms before %s "
+              "(previous close=%s, elapsed=%lld ms)",
+              wait_ms, reason ? reason : "open", close_reason, elapsed_ms));
+    usleep((unsigned int)wait_ms * 1000U);
+}
+
 static int ensure_intercom_call_open(const char* reason) {
+    int rc = 0;
+
+    pthread_mutex_lock(&intercom_command_mutex);
     if (get_call_active_status()) {
         PJ_LOG(3,(THIS_FILE, "Intercom call line already active - not sending START_CALL reason=%s",
                   reason ? reason : "unknown"));
-        return 0;
+        goto out;
+    }
+
+    wait_for_intercom_reopen_guard(reason);
+
+    if (get_call_active_status()) {
+        PJ_LOG(3,(THIS_FILE,
+                  "Intercom call became active during reopen guard - "
+                  "not sending START_CALL reason=%s",
+                  reason ? reason : "unknown"));
+        goto out;
     }
 
     if (intercom_send_command(INTERCOM_CMD_START_CALL) != 0) {
         PJ_LOG(2,(THIS_FILE, "Failed to send START_CALL reason=%s",
                   reason ? reason : "unknown"));
-        return -1;
+        rc = -1;
+        goto out;
     }
 
     set_call_active_status(PJ_TRUE);
     mqtt_publish_call_active(1);
     prometheus_set_call_active(1);
-    return 1;
+    rc = 1;
+
+out:
+    pthread_mutex_unlock(&intercom_command_mutex);
+    return rc;
 }
 
 static void clear_intercom_call_state(const char* reason) {
@@ -1252,13 +1319,17 @@ static void clear_intercom_call_state(const char* reason) {
 static int close_intercom_call(const char* reason) {
     int rc;
 
+    pthread_mutex_lock(&intercom_command_mutex);
     rc = intercom_send_command(INTERCOM_CMD_STOP_CALL);
     if (rc != 0) {
         PJ_LOG(2,(THIS_FILE, "Failed to send STOP_CALL reason=%s",
                   reason ? reason : "unknown"));
+    } else {
+        record_intercom_close(reason);
     }
 
     clear_intercom_call_state(reason);
+    pthread_mutex_unlock(&intercom_command_mutex);
     return rc == 0 ? 0 : -1;
 }
 
@@ -1664,6 +1735,10 @@ static void* ringing_timeout_thread_func(void* arg) {
     pthread_mutex_unlock(&ringing_timeout_mutex);
 
     if (!is_current || sip_calling_is_call_active()) {
+        return NULL;
+    }
+
+    if (!ensure_pj_thread_registered("ring_timeout")) {
         return NULL;
     }
 
@@ -2242,6 +2317,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_HANG_UP_1:
         prometheus_inc_uart_hangup();
         report_alarm_event(2);
+        record_intercom_close(def->name);
         invalidate_ringing_timeout(def->name);
         clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
@@ -2924,6 +3000,19 @@ int main(int argc, char *argv[]) {
 
     app_config.ring_snapshot_delay_ms = clamp_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
     app_config.video_recording_max_seconds = clamp_recording_max_seconds(app_config.video_recording_max_seconds);
+    if (app_config.intercom_reopen_guard_ms < 0) {
+        app_config.intercom_reopen_guard_ms = 0;
+    } else if (app_config.intercom_reopen_guard_ms > 5000) {
+        app_config.intercom_reopen_guard_ms = 5000;
+    }
+    if (app_config.hardware_watchdog_timeout_seconds < 5) {
+        app_config.hardware_watchdog_timeout_seconds = 5;
+    } else if (app_config.hardware_watchdog_timeout_seconds > 300) {
+        app_config.hardware_watchdog_timeout_seconds = 300;
+    }
+    if (app_config.hardware_watchdog_feed_interval_seconds < 1) {
+        app_config.hardware_watchdog_feed_interval_seconds = 1;
+    }
 
     // Print loaded configuration
     config_print(&app_config);
@@ -3068,6 +3157,13 @@ int main(int argc, char *argv[]) {
     if (mqtt_start() < 0) {
         printf("Warning: Failed to start MQTT integration\n");
     }
+    if (hardware_watchdog_start(
+            app_config.hardware_watchdog_enabled,
+            app_config.hardware_watchdog_device,
+            app_config.hardware_watchdog_timeout_seconds,
+            app_config.hardware_watchdog_feed_interval_seconds) != 0) {
+        printf("Warning: Hardware watchdog failed to start; continuing without it\n");
+    }
 
     printf("Wibox SIP client ready. Listening on %s:%d, RTP on %s:%d\n",
            local_ip, app_config.sip_port, local_ip, app_config.rtp_port);
@@ -3081,6 +3177,7 @@ int main(int argc, char *argv[]) {
 
     while (!quit_flag) {
         pj_time_val timeout = {0, 100};
+        hardware_watchdog_heartbeat();
         pjsip_endpt_handle_events(sip_endpt, &timeout);
 
         // Check for timeouts and other periodic tasks
@@ -3095,6 +3192,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Cleanup
+    hardware_watchdog_stop(1);
     stop_video_session();
     stop_audio_engine("shutdown");
     stop_rtsp_service();

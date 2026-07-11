@@ -38,6 +38,9 @@ ding_message=DING
 # Intercom serial listener
 serial_listener_enabled=1
 intercom_device=/dev/ttySGK1
+# Minimum delay before this daemon reopens the intercom after a confirmed close.
+# Physical-ring snapshots do not open or close the channel and are unaffected.
+intercom_reopen_guard_ms=0
 
 # MQTT / Home Assistant
 mqtt_enabled=1
@@ -54,6 +57,13 @@ firmware_update_repo=segator/wibox-media
 # Prometheus metrics exporter
 prometheus_enabled=1
 prometheus_port=9617
+
+# Hardware watchdog. The boot sequence loads goke_wdt with nowayout=0 so normal
+# shutdown and the OTA critical section can disarm it safely.
+hardware_watchdog_enabled=1
+hardware_watchdog_device=/dev/watchdog
+hardware_watchdog_timeout_seconds=30
+hardware_watchdog_feed_interval_seconds=5
 
 # Audio Configuration
 audio_buffer_size=160

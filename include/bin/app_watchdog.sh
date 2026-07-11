@@ -8,6 +8,7 @@ APP_PATH="$2"
 LOG_FILE="${3:-/var/log/${APP_NAME}.log}"
 RESTART_DELAY="${4:-5}"
 LOG_MAX_SIZE="${5:-100}"  # KB
+OTA_GUARD="/tmp/wibox-firmware-update-critical"
 
 # Validation
 if [ -z "$APP_NAME" ] || [ -z "$APP_PATH" ]; then
@@ -61,6 +62,38 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+wait_for_ota_guard() {
+    announced=0
+    while [ -f "$OTA_GUARD" ]; do
+        GUARD_STATE=$(sed -n 's/^state=//p' "$OTA_GUARD" 2>/dev/null | head -1)
+        GUARD_PID=$(sed -n 's/^pid=//p' "$OTA_GUARD" 2>/dev/null | head -1)
+
+        # PREPARE means flash has not been touched. If its updater vanished,
+        # remove the stale guard and recover the daemon automatically.
+        if [ "$GUARD_STATE" = "PREPARE" ]; then
+            case "$GUARD_PID" in
+                ''|*[!0-9]*) ;;
+                *)
+                    if ! kill -0 "$GUARD_PID" 2>/dev/null; then
+                        echo "$(date): Removing stale pre-flash OTA guard (PID $GUARD_PID)" >> "$LOG_FILE"
+                        rm -f "$OTA_GUARD"
+                        break
+                    fi
+                    ;;
+            esac
+        fi
+
+        if [ "$announced" = 0 ]; then
+            echo "$(date): OTA guard active state=${GUARD_STATE:-unknown}; application restart paused" >> "$LOG_FILE"
+            announced=1
+        fi
+        sleep 1
+    done
+    if [ "$announced" = 1 ] && [ ! -f "$OTA_GUARD" ]; then
+        echo "$(date): OTA guard cleared; application restart resumed" >> "$LOG_FILE"
+    fi
+}
+
 # Initial log entries
 echo "Starting $APP_NAME watchdog (PID: $$)..." >> "$LOG_FILE"
 echo "App path: $APP_PATH" >> "$LOG_FILE"
@@ -71,6 +104,7 @@ echo "Log rotator PID: $LOG_ROTATOR_PID" >> "$LOG_FILE"
 
 # Main watchdog loop
 while true; do
+    wait_for_ota_guard
     echo "$(date): Starting $APP_NAME" >> "$LOG_FILE"
 
     # Start the application with logging (busybox compatible with immediate flushing)
@@ -92,5 +126,7 @@ while true; do
 
     # If we get here, the app crashed or exited
     echo "$(date): $APP_NAME (PID: $APP_PID) exited with code $EXIT_CODE, restarting in ${RESTART_DELAY}s..." >> "$LOG_FILE"
-    sleep "$RESTART_DELAY"
+    if [ ! -f "$OTA_GUARD" ]; then
+        sleep "$RESTART_DELAY"
+    fi
 done

@@ -60,6 +60,7 @@ void config_init_defaults(wibox_config_t* config) {
     // Intercom serial listener
     config->serial_listener_enabled = 1;
     strcpy(config->intercom_device, "/dev/ttySGK1");
+    config->intercom_reopen_guard_ms = 0;
 
     // MQTT/Home Assistant
     config->mqtt_enabled = 1;
@@ -76,6 +77,12 @@ void config_init_defaults(wibox_config_t* config) {
     // Prometheus metrics exporter
     config->prometheus_enabled = 1;
     config->prometheus_port = 9617;
+
+    // Hardware watchdog
+    config->hardware_watchdog_enabled = 1;
+    strcpy(config->hardware_watchdog_device, "/dev/watchdog");
+    config->hardware_watchdog_timeout_seconds = 30;
+    config->hardware_watchdog_feed_interval_seconds = 5;
 
     // Audio Configuration
     config->audio_buffer_size = 160;
@@ -185,6 +192,8 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
     } else if (strcmp(key, "intercom_device") == 0) {
         strncpy(config->intercom_device, value, sizeof(config->intercom_device) - 1);
         config->intercom_device[sizeof(config->intercom_device) - 1] = '\0';
+    } else if (strcmp(key, "intercom_reopen_guard_ms") == 0) {
+        config->intercom_reopen_guard_ms = atoi(value);
     } else if (strcmp(key, "mqtt_enabled") == 0) {
         config->mqtt_enabled = atoi(value);
     } else if (strcmp(key, "mqtt_host") == 0) {
@@ -220,6 +229,17 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
         config->prometheus_enabled = atoi(value);
     } else if (strcmp(key, "prometheus_port") == 0) {
         config->prometheus_port = atoi(value);
+    } else if (strcmp(key, "hardware_watchdog_enabled") == 0) {
+        config->hardware_watchdog_enabled = atoi(value);
+    } else if (strcmp(key, "hardware_watchdog_device") == 0) {
+        strncpy(config->hardware_watchdog_device, value,
+                sizeof(config->hardware_watchdog_device) - 1);
+        config->hardware_watchdog_device[
+            sizeof(config->hardware_watchdog_device) - 1] = '\0';
+    } else if (strcmp(key, "hardware_watchdog_timeout_seconds") == 0) {
+        config->hardware_watchdog_timeout_seconds = atoi(value);
+    } else if (strcmp(key, "hardware_watchdog_feed_interval_seconds") == 0) {
+        config->hardware_watchdog_feed_interval_seconds = atoi(value);
     } else if (strcmp(key, "mqtt_pub_path") == 0) {
         return 0; /* legacy shell-client config, ignored */
     } else if (strcmp(key, "mqtt_sub_path") == 0) {
@@ -322,6 +342,7 @@ void config_print(const wibox_config_t* config) {
     printf("ding_message = %s\n", config->ding_message);
     printf("serial_listener_enabled = %d\n", config->serial_listener_enabled);
     printf("intercom_device = %s\n", config->intercom_device);
+    printf("intercom_reopen_guard_ms = %d\n", config->intercom_reopen_guard_ms);
     printf("mqtt_enabled = %d\n", config->mqtt_enabled);
     printf("mqtt_host = %s\n", config->mqtt_host);
     printf("mqtt_user = %s\n", config->mqtt_user);
@@ -333,6 +354,12 @@ void config_print(const wibox_config_t* config) {
     printf("firmware_update_repo = %s\n", config->firmware_update_repo);
     printf("prometheus_enabled = %d\n", config->prometheus_enabled);
     printf("prometheus_port = %d\n", config->prometheus_port);
+    printf("hardware_watchdog_enabled = %d\n", config->hardware_watchdog_enabled);
+    printf("hardware_watchdog_device = %s\n", config->hardware_watchdog_device);
+    printf("hardware_watchdog_timeout_seconds = %d\n",
+           config->hardware_watchdog_timeout_seconds);
+    printf("hardware_watchdog_feed_interval_seconds = %d\n",
+           config->hardware_watchdog_feed_interval_seconds);
     printf("audio_buffer_size = %d\n", config->audio_buffer_size);
     printf("audio_chip_gpio = %d\n", config->audio_chip_gpio);
     printf("audio_input_gain_percent = %d\n", config->audio_input_gain_percent);

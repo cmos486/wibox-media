@@ -35,6 +35,7 @@ build-media: prepare-base
 
 test:
 	tests/mqtt_native_mock.py
+	sh tests/watchdog_defaults_test.sh
 
 verify: test verify-image
 

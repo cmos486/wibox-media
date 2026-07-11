@@ -1,9 +1,11 @@
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <netdb.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -17,6 +19,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "watchdog_protocol.h"
 
 #ifndef WIBOX_VERSION
 #define WIBOX_VERSION "dev-unknown"
@@ -55,6 +59,12 @@ struct erase_info_user_compat {
 #endif
 #ifndef MEMERASE
 #define MEMERASE _IOW('M', 2, struct erase_info_user_compat)
+#endif
+#ifndef WDIOC_SETOPTIONS
+#define WDIOC_SETOPTIONS _IOR('W', 4, int)
+#endif
+#ifndef WDIOS_DISABLECARD
+#define WDIOS_DISABLECARD 0x0001
 #endif
 
 #define SSL_VERIFY_PEER 0x01
@@ -642,7 +652,237 @@ static int get_local_version(char *out, size_t out_size) {
     return 0;
 }
 
-static int flash_file(const char *image_path, size_t image_size, const char *expected_md5, bool reboot_after) {
+static int write_all(int fd, const char *data, size_t len) {
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t written = write(fd, data + off, len - off);
+        if (written <= 0) {
+            return -1;
+        }
+        off += (size_t)written;
+    }
+    return 0;
+}
+
+static int ota_guard_write_state(const char *state, bool exclusive) {
+    char payload[96];
+    char temporary_path[160];
+    int publish_rc;
+    int saved_errno;
+    int fd;
+    int len;
+
+    snprintf(temporary_path, sizeof(temporary_path), "%s.%ld.tmp",
+             WIBOX_OTA_GUARD_PATH, (long)getpid());
+    unlink(temporary_path);
+    fd = open(temporary_path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) {
+        log_line(stderr, "[!] open(%s): %s", temporary_path, strerror(errno));
+        return -1;
+    }
+    len = snprintf(payload, sizeof(payload), "state=%s\npid=%ld\n",
+                   state, (long)getpid());
+    if (len <= 0 || (size_t)len >= sizeof(payload) ||
+        write_all(fd, payload, (size_t)len) != 0 || fsync(fd) != 0) {
+        saved_errno = errno ? errno : EIO;
+        log_line(stderr, "[!] unable to persist OTA guard state %s: %s",
+                 state, strerror(saved_errno));
+        close(fd);
+        unlink(temporary_path);
+        errno = saved_errno;
+        return -1;
+    }
+    close(fd);
+
+    if (exclusive) {
+        publish_rc = link(temporary_path, WIBOX_OTA_GUARD_PATH);
+    } else {
+        publish_rc = rename(temporary_path, WIBOX_OTA_GUARD_PATH);
+    }
+    saved_errno = errno;
+    unlink(temporary_path);
+    if (publish_rc != 0) {
+        errno = saved_errno;
+        log_line(stderr, "[!] unable to publish OTA guard state %s: %s",
+                 state, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static void ota_guard_cancel(void) {
+    if (unlink(WIBOX_OTA_GUARD_PATH) != 0 && errno != ENOENT) {
+        log_line(stderr, "[!] unable to remove OTA guard: %s", strerror(errno));
+    }
+    sync();
+}
+
+static int process_is_media_daemon(pid_t pid) {
+    char path[64];
+    char cmdline[512];
+    char *base;
+    ssize_t len;
+    int fd;
+
+    snprintf(path, sizeof(path), "/proc/%ld/cmdline", (long)pid);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    len = read(fd, cmdline, sizeof(cmdline) - 1);
+    close(fd);
+    if (len <= 0) {
+        return 0;
+    }
+    cmdline[len] = '\0';
+    base = strrchr(cmdline, '/');
+    base = base ? base + 1 : cmdline;
+    return strcmp(base, "wibox-media-daemon") == 0;
+}
+
+static int visit_media_daemons(int signal_number) {
+    struct dirent *entry;
+    DIR *proc;
+    int count = 0;
+
+    proc = opendir("/proc");
+    if (!proc) {
+        log_line(stderr, "[!] opendir(/proc): %s", strerror(errno));
+        return -1;
+    }
+    while ((entry = readdir(proc)) != NULL) {
+        char *end;
+        long value;
+
+        if (!isdigit((unsigned char)entry->d_name[0])) {
+            continue;
+        }
+        value = strtol(entry->d_name, &end, 10);
+        if (*end != '\0' || value <= 1 || value == (long)getpid()) {
+            continue;
+        }
+        if (process_is_media_daemon((pid_t)value)) {
+            count++;
+            if (signal_number != 0 && kill((pid_t)value, signal_number) != 0 &&
+                errno != ESRCH) {
+                log_line(stderr, "[!] kill(%ld, %d): %s",
+                         value, signal_number, strerror(errno));
+            }
+        }
+    }
+    closedir(proc);
+    return count;
+}
+
+static int wait_for_media_daemons(int timeout_ms) {
+    int waited_ms = 0;
+
+    while (waited_ms < timeout_ms) {
+        int count = visit_media_daemons(0);
+        if (count == 0) {
+            return 0;
+        }
+        if (count < 0) {
+            return -1;
+        }
+        usleep(100000);
+        waited_ms += 100;
+    }
+    return visit_media_daemons(0) == 0 ? 0 : -1;
+}
+
+static int stop_media_daemons_for_ota(void) {
+    int count = visit_media_daemons(0);
+
+    if (count < 0) {
+        return -1;
+    }
+    if (count == 0) {
+        log_line(stderr, "[*] no running media daemon to stop for OTA");
+        return 0;
+    }
+
+    log_line(stderr, "[*] stopping %d media process(es) before flash", count);
+    if (visit_media_daemons(SIGTERM) < 0) {
+        return -1;
+    }
+    if (wait_for_media_daemons(12000) == 0) {
+        return 0;
+    }
+
+    log_line(stderr, "[!] media daemon did not stop cleanly; forcing termination");
+    if (visit_media_daemons(SIGKILL) < 0 ||
+        wait_for_media_daemons(2000) != 0) {
+        log_line(stderr, "[!] unable to stop all media processes; flash aborted");
+        return -1;
+    }
+    return 0;
+}
+
+static int disarm_watchdog_for_flash(const char *device) {
+    int options = WDIOS_DISABLECARD;
+    int fd;
+
+    if (access(device, F_OK) != 0) {
+        if (errno == ENOENT) {
+            log_line(stderr, "[*] watchdog device %s is absent; no disarm needed", device);
+            return 0;
+        }
+        log_line(stderr, "[!] access(%s): %s", device, strerror(errno));
+        return -1;
+    }
+
+    fd = open(device, O_RDWR);
+    if (fd < 0) {
+        log_line(stderr, "[!] unable to open watchdog for OTA disarm: %s", strerror(errno));
+        return -1;
+    }
+    if (ioctl(fd, WDIOC_SETOPTIONS, &options) != 0) {
+        log_line(stderr, "[!] watchdog refused OTA disarm: %s", strerror(errno));
+        (void)write(fd, "V", 1);
+        close(fd);
+        return -1;
+    }
+    (void)write(fd, "V", 1);
+    close(fd);
+    log_line(stderr, "[*] hardware watchdog confirmed disarmed for flash");
+    return 0;
+}
+
+static void resolve_watchdog_device(const char *conf_file,
+                                    char *device,
+                                    size_t device_size) {
+    if (read_cfg_value(conf_file, "hardware_watchdog_device",
+                       device, device_size) == 0 && device[0]) {
+        return;
+    }
+    if (read_cfg_value(DEFAULT_CONF_FALLBACK, "hardware_watchdog_device",
+                       device, device_size) == 0 && device[0]) {
+        return;
+    }
+    snprintf(device, device_size, "%s", WIBOX_WATCHDOG_DEVICE_DEFAULT);
+}
+
+static int ota_guard_begin(const char *watchdog_device) {
+    if (ota_guard_write_state("PREPARE", true) != 0) {
+        log_line(stderr, "[!] another OTA critical section may already be active");
+        return -1;
+    }
+    sync();
+
+    if (stop_media_daemons_for_ota() != 0 ||
+        disarm_watchdog_for_flash(watchdog_device) != 0) {
+        ota_guard_cancel();
+        return -1;
+    }
+    log_line(stderr, "[*] OTA critical section ready; daemon stopped and watchdog disarmed");
+    return 0;
+}
+
+static int flash_file(const char *image_path, size_t image_size,
+                      const char *expected_md5, bool reboot_after,
+                      bool *flash_touched) {
     int image_fd = -1;
     int flash_fd = -1;
     unsigned char buf[FLASH_BLOCK];
@@ -652,13 +892,9 @@ static int flash_file(const char *image_path, size_t image_size, const char *exp
     uint32_t erase_len;
     uint32_t erased;
 
-    if (umount2(FLASH_MOUNTPOINT, MNT_DETACH) != 0) {
-        if (umount2("/dev/mtdblock4", MNT_DETACH) != 0) {
-            log_line(stderr, "[!] unable to unmount %s: %s", FLASH_MOUNTPOINT, strerror(errno));
-            return -1;
-        }
+    if (flash_touched) {
+        *flash_touched = false;
     }
-
     image_fd = open(image_path, O_RDONLY);
     if (image_fd < 0) {
         log_line(stderr, "[!] open(%s): %s", image_path, strerror(errno));
@@ -686,8 +922,26 @@ static int flash_file(const char *image_path, size_t image_size, const char *exp
         return -1;
     }
     erase_len = (uint32_t)(((image_size + mtd.erasesize - 1) / mtd.erasesize) * mtd.erasesize);
+
+    if (ota_guard_write_state("FLASHING", false) != 0) {
+        close(image_fd);
+        close(flash_fd);
+        return -1;
+    }
+    if (umount2(FLASH_MOUNTPOINT, MNT_DETACH) != 0) {
+        if (umount2("/dev/mtdblock4", MNT_DETACH) != 0) {
+            log_line(stderr, "[!] unable to unmount %s: %s", FLASH_MOUNTPOINT, strerror(errno));
+            close(image_fd);
+            close(flash_fd);
+            return -1;
+        }
+    }
+
     log_line(stderr, "[*] erasing %u bytes on %s (mtd size=%u erasesize=%u)",
              erase_len, FLASH_DEVICE, mtd.size, mtd.erasesize);
+    if (flash_touched) {
+        *flash_touched = true;
+    }
     for (erased = 0; erased < erase_len; erased += mtd.erasesize) {
         struct erase_info_user_compat erase;
         erase.start = erased;
@@ -712,7 +966,7 @@ static int flash_file(const char *image_path, size_t image_size, const char *exp
         ssize_t off = 0;
         while (off < n) {
             ssize_t w = write(flash_fd, buf + off, (size_t)(n - off));
-            if (w < 0) {
+            if (w <= 0) {
                 log_line(stderr, "[!] write(%s): %s", FLASH_DEVICE, strerror(errno));
                 close(image_fd);
                 close(flash_fd);
@@ -730,9 +984,16 @@ static int flash_file(const char *image_path, size_t image_size, const char *exp
     sync();
     if (fsync(flash_fd) != 0) {
         log_line(stderr, "[!] fsync(%s): %s", FLASH_DEVICE, strerror(errno));
+        close(image_fd);
+        close(flash_fd);
+        return -1;
     }
     close(image_fd);
     close(flash_fd);
+
+    if (ota_guard_write_state("VERIFYING", false) != 0) {
+        log_line(stderr, "[!] unable to update OTA guard to VERIFYING; continuing safely locked");
+    }
 
     if (read_md5sum_prefix(FLASH_VERIFY_DEVICE, image_size, flash_md5) != 0) {
         log_line(stderr, "[!] unable to hash flashed image");
@@ -743,13 +1004,42 @@ static int flash_file(const char *image_path, size_t image_size, const char *exp
         return -1;
     }
     log_line(stderr, "[*] flash verification OK (%s)", flash_md5);
+    if (ota_guard_write_state("COMPLETE", false) != 0) {
+        log_line(stderr, "[!] unable to update OTA guard to COMPLETE; continuing safely locked");
+    }
 
     if (reboot_after) {
         log_line(stderr, "[*] rebooting");
         sync();
-        reboot(RB_AUTOBOOT);
+        if (reboot(RB_AUTOBOOT) != 0) {
+            log_line(stderr, "[!] reboot failed after successful flash: %s", strerror(errno));
+            return -1;
+        }
     }
+    log_line(stderr, "[*] flash complete without reboot; OTA guard intentionally retained");
     return 0;
+}
+
+static int guarded_flash_file(const char *image_path, size_t image_size,
+                              const char *expected_md5, bool reboot_after,
+                              const char *watchdog_device) {
+    bool flash_touched = false;
+    int rc;
+
+    if (ota_guard_begin(watchdog_device) != 0) {
+        return -1;
+    }
+    rc = flash_file(image_path, image_size, expected_md5, reboot_after,
+                    &flash_touched);
+    if (rc != 0) {
+        if (!flash_touched) {
+            log_line(stderr, "[*] flash was not modified; clearing OTA guard for daemon recovery");
+            ota_guard_cancel();
+        } else {
+            log_line(stderr, "[!] CRITICAL: flash may be incomplete; OTA guard retained to prevent automatic reboot or daemon restart");
+        }
+    }
+    return rc;
 }
 
 static int fetch_latest_release(const char *repo, char *tag, size_t tag_size) {
@@ -780,6 +1070,7 @@ int main(int argc, char **argv) {
     bool force = false;
     bool reboot_after = true;
     bool status_only = false;
+    bool test_watchdog_guard = false;
     char conf_repo[128];
     char conf_enabled[16];
     char local_version[64];
@@ -788,6 +1079,7 @@ int main(int argc, char **argv) {
     char image_url[512];
     char md5s_url[512];
     char expected_md5[33];
+    char watchdog_device[256];
     size_t downloaded_size = 0;
     int opt;
 
@@ -800,10 +1092,11 @@ int main(int argc, char **argv) {
         { "image", required_argument, NULL, 'i' },
         { "expected-md5", required_argument, NULL, 'm' },
         { "status", no_argument, NULL, 's' },
+        { "test-watchdog-guard", no_argument, NULL, 'T' },
         { 0, 0, 0, 0 }
     };
 
-    while ((opt = getopt_long(argc, argv, "c:r:fno:i:m:s", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:r:fno:i:m:sT", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'c':
             conf_file = optarg;
@@ -829,10 +1122,23 @@ int main(int argc, char **argv) {
         case 's':
             status_only = true;
             break;
+        case 'T':
+            test_watchdog_guard = true;
+            break;
         default:
-            fprintf(stderr, "usage: %s [--config FILE] [--repo OWNER/REPO] [--force] [--no-reboot] [--output FILE] [--image FILE --expected-md5 MD5] [--status]\n", basename_const(argv[0]));
+            fprintf(stderr, "usage: %s [--config FILE] [--repo OWNER/REPO] [--force] [--no-reboot] [--output FILE] [--image FILE --expected-md5 MD5] [--status] [--test-watchdog-guard]\n", basename_const(argv[0]));
             return 2;
         }
+    }
+
+    resolve_watchdog_device(conf_file, watchdog_device, sizeof(watchdog_device));
+    if (test_watchdog_guard) {
+        if (ota_guard_begin(watchdog_device) != 0) {
+            return 1;
+        }
+        log_line(stderr, "[*] watchdog OTA guard self-test passed; clearing guard");
+        ota_guard_cancel();
+        return 0;
     }
 
     if (install_image) {
@@ -857,7 +1163,9 @@ int main(int argc, char **argv) {
                      install_expected_md5, local_md5);
             return 1;
         }
-        return flash_file(install_image, (size_t)st.st_size, install_expected_md5, reboot_after) == 0 ? 0 : 1;
+        return guarded_flash_file(install_image, (size_t)st.st_size,
+                                  install_expected_md5, reboot_after,
+                                  watchdog_device) == 0 ? 0 : 1;
     }
 
     conf_enabled[0] = '\0';
@@ -967,7 +1275,8 @@ int main(int argc, char **argv) {
         log_line(stderr, "[*] download verified md5=%s bytes=%zu", downloaded_md5, downloaded_size);
     }
 
-    if (flash_file(update_file, downloaded_size, expected_md5, reboot_after) != 0) {
+    if (guarded_flash_file(update_file, downloaded_size, expected_md5,
+                           reboot_after, watchdog_device) != 0) {
         log_line(stderr, "[!] flashing failed");
         return 1;
     }

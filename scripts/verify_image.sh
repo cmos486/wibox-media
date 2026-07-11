@@ -81,6 +81,24 @@ if ! grep -q "^prometheus_port=9617" "${ROOT}/etc/sip_media.conf.default"; then
   echo "[!] default config does not set Prometheus port 9617" >&2
   exit 9
 fi
+if ! grep -q "^hardware_watchdog_enabled=1" "${ROOT}/etc/sip_media.conf.default"; then
+  echo "[!] default config does not enable the hardware watchdog" >&2
+  exit 9
+fi
+if ! grep -q "^hardware_watchdog_timeout_seconds=30" "${ROOT}/etc/sip_media.conf.default" ||
+   ! grep -q "^hardware_watchdog_feed_interval_seconds=5" "${ROOT}/etc/sip_media.conf.default"; then
+  echo "[!] default config does not contain safe watchdog timing" >&2
+  exit 9
+fi
+if ! grep -q "^WATCHDOG_MODULE=/ko/extdrv/goke_wdt.ko" "${ROOT}/run.sh" ||
+   ! grep -q "insmod.*init_mode=2.*soft_noboot=0.*nowayout=0" "${ROOT}/run.sh"; then
+  echo "[!] run.sh does not load the stoppable production watchdog" >&2
+  exit 9
+fi
+if ! grep -q "wibox-firmware-update-critical" "${ROOT}/bin/app_watchdog.sh"; then
+  echo "[!] app watchdog does not honor the OTA critical guard" >&2
+  exit 9
+fi
 for key in WIBOX_VERSION WIBOX_COMMIT WIBOX_BUILD_TIMESTAMP; do
   if ! grep -q "^${key}=." "${ROOT}/etc/wibox-release"; then
     echo "[!] ${ROOT}/etc/wibox-release missing ${key}" >&2

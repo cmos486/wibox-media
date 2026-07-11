@@ -35,6 +35,7 @@ typedef struct {
     // Intercom serial listener
     int serial_listener_enabled;
     char intercom_device[256];
+    int intercom_reopen_guard_ms;
 
     // MQTT/Home Assistant
     int mqtt_enabled;
@@ -51,6 +52,12 @@ typedef struct {
     // Prometheus metrics exporter
     int prometheus_enabled;
     int prometheus_port;
+
+    // Hardware watchdog
+    int hardware_watchdog_enabled;
+    char hardware_watchdog_device[256];
+    int hardware_watchdog_timeout_seconds;
+    int hardware_watchdog_feed_interval_seconds;
 
     // Audio Configuration
     int audio_buffer_size;
