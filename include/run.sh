@@ -117,6 +117,25 @@ if [ -z "${RUN_SOFIA}" ] || [ "${RUN_SOFIA}" != "0" ]; then
   fi
 fi
 
+# Sofia_temp loads a watchdog configuration only during hardware warmup and
+# then unloads it. Reload the real watchdog in stoppable mode for the daemon.
+WATCHDOG_MODULE=/ko/extdrv/goke_wdt.ko
+if grep -q '^goke_wdt ' /proc/modules 2>/dev/null; then
+  echo "Reloading warmup watchdog in production mode"
+  /sbin/rmmod goke_wdt || echo "WARNING: unable to unload warmup watchdog"
+fi
+if ! grep -q '^goke_wdt ' /proc/modules 2>/dev/null; then
+  if /sbin/insmod "${WATCHDOG_MODULE}" init_mode=2 soft_noboot=0 nowayout=0 tmr_atboot=0 tmr_margin=30; then
+    sleep 1
+    /sbin/mdev -s
+  else
+    echo "WARNING: unable to load ${WATCHDOG_MODULE}; app watchdog remains active"
+  fi
+fi
+if [ ! -c /dev/watchdog ]; then
+  echo "WARNING: /dev/watchdog unavailable; app watchdog remains active"
+fi
+
 # update hostname after Sofia run
 echo "IDS7938${UDID:8:4}" > /proc/sys/kernel/hostname
 

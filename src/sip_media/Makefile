@@ -48,7 +48,7 @@ endif
 # source files
 ################################################################################
 
-SOURCES = sip_media.c sip_calling.c intercom.c config.c mqtt.c prometheus.c audio_hw.c video_worker.c rtsp_stream.c
+SOURCES = sip_media.c sip_calling.c intercom.c config.c mqtt.c prometheus.c audio_hw.c video_worker.c rtsp_stream.c hardware_watchdog.c
 
 ################################################################################
 # define user cc flags
@@ -92,9 +92,9 @@ ADI_STATIC_LIB = $(ADI_SDK_DIR)/install/arm11-gcc-uClibc-linux-GK710XS/lib/libad
 
 # PJSIP libraries
 ifeq ($(IS_CONTAINER),true)
-    LIBRARIES = pjsip-arm-goke-linux-uclibcgnueabi pjlib-util-arm-goke-linux-uclibcgnueabi pj-arm-goke-linux-uclibcgnueabi pthread m
+    LIBRARIES = pjsip-arm-goke-linux-uclibcgnueabi pjlib-util-arm-goke-linux-uclibcgnueabi pj-arm-goke-linux-uclibcgnueabi pthread rt m
 else
-    LIBRARIES = pjsip pjlib-util pj pthread m
+    LIBRARIES = pjsip pjlib-util pj pthread rt m
 endif
 
 ################################################################################
@@ -138,6 +138,7 @@ mqtt.o: mqtt.c mqtt.h config.h
 prometheus.o: prometheus.c prometheus.h mqtt.h
 video_worker.o: video_worker.c video_worker.h ../video_rtp_bridge/video_rtp_bridge.c
 rtsp_stream.o: rtsp_stream.c rtsp_stream.h
+hardware_watchdog.o: hardware_watchdog.c hardware_watchdog.h ../watchdog_protocol.h
 
 ################################################################################
 # Build rules
