@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/segator/wibox-media/compare/v0.14.0...v0.15.0) (2026-07-11)
+
+
+### Features
+
+* add hardware watchdog resilience ([3615ecc](https://github.com/segator/wibox-media/commit/3615ecce64575f521294efaa9c28684a7fb908d6))
+* add hardware watchdog resilience ([70ba818](https://github.com/segator/wibox-media/commit/70ba818e653fd33277ca22516d7b90174169cb68))
+
 ## [0.14.0](https://github.com/segator/wibox-media/compare/v0.13.0...v0.14.0) (2026-07-06)
 
 
