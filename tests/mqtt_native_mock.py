@@ -184,6 +184,19 @@ def main():
                for topic, payload in published):
         print("missing snapshot button availability topic", file=sys.stderr)
         return 1
+    if not any(topic.endswith("_developer_simulate_handset_answered/config")
+               for topic, _ in published):
+        print("missing developer handset button discovery publish", file=sys.stderr)
+        return 1
+    if not any(topic.endswith("_developer_simulate_handset_answered/config") and
+               'developer/simulate_handset_answered/availability' in payload
+               for topic, payload in published):
+        print("missing developer handset button availability topic", file=sys.stderr)
+        return 1
+    if ("wibox/test/developer/simulate_handset_answered/availability", "offline") \
+            not in published:
+        print("missing developer handset disabled availability publish", file=sys.stderr)
+        return 1
     if not any(topic.endswith("_snapshot/config") and '"image_encoding":"b64"' in payload
                for topic, payload in published):
         print("missing snapshot image Home Assistant discovery publish", file=sys.stderr)

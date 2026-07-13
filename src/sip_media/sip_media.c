@@ -235,6 +235,7 @@ static void mqtt_trigger_f1_callback(void* user_data);
 static void mqtt_reboot_device_callback(void* user_data);
 static void mqtt_take_snapshot_callback(void* user_data);
 static void mqtt_simulate_ding_callback(void* user_data);
+static void mqtt_simulate_handset_answered_callback(void* user_data);
 static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
                                   const char* reason, int start_rtsp_after);
 static void* snapshot_thread_func(void* arg);
@@ -1424,6 +1425,29 @@ static void mqtt_simulate_ding_callback(void* user_data) {
                   app_config.ding_message, app_config.sip_listen_pipe));
     }
     close(fd);
+}
+
+static void mqtt_simulate_handset_answered_callback(void* user_data) {
+    static const unsigned char frame[4] = {0xFB, 0x23, 0x00, 0x2E};
+    int close_simulated_panel;
+    (void)user_data;
+
+    if (!ensure_pj_thread_registered("mqtt_handset")) {
+        return;
+    }
+
+    close_simulated_panel = simulated_ding_panel_context_active;
+    PJ_LOG(3,(THIS_FILE,
+              "Developer simulate handset answered - injecting FB 23 00 2E"));
+    handle_uart_frame(frame);
+
+    if (close_simulated_panel) {
+        PJ_LOG(3,(THIS_FILE,
+                  "Closing panel context opened by developer simulated DING"));
+        mute_audio_input_for_ms(app_config.audio_line_mute_ms,
+                                "simulated-handset-stop");
+        close_intercom_call("developer-simulated-handset-answered");
+    }
 }
 
 static void publish_snapshot_button_availability(void) {
@@ -3054,6 +3078,7 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.reboot_device = mqtt_reboot_device_callback;
     mqtt_callbacks.take_snapshot = mqtt_take_snapshot_callback;
     mqtt_callbacks.simulate_ding = mqtt_simulate_ding_callback;
+    mqtt_callbacks.simulate_handset_answered = mqtt_simulate_handset_answered_callback;
     mqtt_callbacks.set_video_enabled = mqtt_set_video_enabled_callback;
     mqtt_callbacks.set_video_bitrate = mqtt_set_video_bitrate_callback;
     mqtt_callbacks.set_sip_outgoing_call_enabled = mqtt_set_sip_outgoing_call_enabled_callback;
