@@ -5,7 +5,6 @@
 
 ### Bug Fixes
 
-* tolerate unsupported MTD fsync ([cedb73d](https://github.com/segator/wibox-media/commit/cedb73dfd403cac60dd79a14acf03e4049d422ad))
 * tolerate unsupported MTD fsync ([c1cda6d](https://github.com/segator/wibox-media/commit/c1cda6d65ec3ffd3d4a824d34d8fdf026336d382))
 
 ## [0.16.1](https://github.com/segator/wibox-media/compare/v0.16.0...v0.16.1) (2026-07-13)
