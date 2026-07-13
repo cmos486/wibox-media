@@ -785,6 +785,30 @@ static void publish_developer_simulate_ding_button_config(void) {
     mqtt_publish_raw(topic, payload, 1);
 }
 
+static void publish_developer_simulate_handset_answered_button_config(void) {
+    char topic[256];
+    char command_topic[256];
+    char availability_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "button", "developer_simulate_handset_answered");
+    topic_path(command_topic, sizeof(command_topic),
+               "developer/simulate_handset_answered/set");
+    topic_path(availability_topic, sizeof(availability_topic),
+               "developer/simulate_handset_answered/availability");
+    unique_id(uid, sizeof(uid), "developer_simulate_handset_answered");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Developer Simulate Handset Answered\",\"unique_id\":\"%s\","
+             "\"command_topic\":\"%s\",\"payload_press\":\"PRESS\","
+             "\"availability_topic\":\"%s\",\"icon\":\"mdi:phone-in-talk\",%s}",
+             uid, command_topic, availability_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_developer_mode_switch_config(void) {
     char topic[256];
     char state_topic[256];
@@ -1248,6 +1272,7 @@ void mqtt_publish_discovery(void) {
     publish_reboot_button_config();
     publish_developer_mode_switch_config();
     publish_developer_simulate_ding_button_config();
+    publish_developer_simulate_handset_answered_button_config();
     publish_snapshot_button_config();
     publish_snapshot_image_config();
     publish_uart_event_config();
@@ -1354,6 +1379,8 @@ static void mqtt_publish_developer_mode(int enabled) {
     publish_suffix("developer/mode",
                    mqtt_state.developer_mode_enabled ? "ON" : "OFF", 1);
     publish_suffix("developer/simulate_ding/availability",
+                   mqtt_state.developer_mode_enabled ? "online" : "offline", 1);
+    publish_suffix("developer/simulate_handset_answered/availability",
                    mqtt_state.developer_mode_enabled ? "online" : "offline", 1);
 }
 
@@ -1556,6 +1583,24 @@ static void handle_mqtt_message(const char* topic, const char* payload, int reta
         return;
     }
 
+    topic_path(expected, sizeof(expected), "developer/simulate_handset_answered/set");
+    if (strcmp(topic, expected) == 0) {
+        if (retain) {
+            log_ignored_retained_command(topic);
+            return;
+        }
+        if (!mqtt_state.developer_mode_enabled) {
+            printf("%s: developer simulate handset answered ignored - developer mode is OFF\n",
+                   MQTT_FILE);
+            return;
+        }
+        if (payload_is_on(payload) && mqtt_state.callbacks.simulate_handset_answered) {
+            printf("%s: developer simulate handset answered command received\n", MQTT_FILE);
+            mqtt_state.callbacks.simulate_handset_answered(mqtt_state.user_data);
+        }
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "developer/mode/set");
     if (strcmp(topic, expected) == 0) {
         if (retain) {
@@ -1722,6 +1767,7 @@ static int mqtt_subscribe_topics(void) {
         "system/reboot/set",
         "developer/mode/set",
         "developer/simulate_ding/set",
+        "developer/simulate_handset_answered/set",
         "snapshot/take/set",
         "snapshot/ring_delay_ms/set",
         "video/enabled/set",

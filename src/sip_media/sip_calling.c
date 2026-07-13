@@ -132,7 +132,17 @@ static void set_call_state(sip_call_state_t new_state) {
     }
 }
 
+static pjsip_tx_data *outgoing_invite_tdata = NULL;
+
+static void release_outgoing_invite_tdata(void) {
+    if (outgoing_invite_tdata) {
+        pjsip_tx_data_dec_ref(outgoing_invite_tdata);
+        outgoing_invite_tdata = NULL;
+    }
+}
+
 static void clear_session_data(void) {
+    release_outgoing_invite_tdata();
     current_session.call_start_time = 0;
     current_session.direction = SIP_CALL_DIRECTION_NONE;
     current_session.remote_rtp_port = 8000;
@@ -274,45 +284,17 @@ static void store_dialog_info_from_response(pjsip_rx_data *rdata) {
 static pj_status_t send_cancel_request(void) {
     pjsip_tx_data *tdata;
     pj_status_t status;
-    pjsip_method cancel_method = *pjsip_get_cancel_method();
-    pj_str_t target_uri_str = pj_str(config.target_uri);
-    pj_str_t from_uri_str;
-    char from_uri_buf[128];
 
     if (current_session.direction != SIP_CALL_DIRECTION_OUTGOING ||
-        current_session.call_id.slen == 0 ||
-        current_session.invite_cseq == 0) {
-        PJ_LOG(2,(THIS_FILE, "Cannot send CANCEL: missing outgoing INVITE dialog data"));
+        !outgoing_invite_tdata) {
+        PJ_LOG(2,(THIS_FILE, "Cannot send CANCEL: original outgoing INVITE is unavailable"));
         return PJ_EINVAL;
     }
 
-    snprintf(from_uri_buf, sizeof(from_uri_buf), "sip:caller@%s:%d",
-             config.local_ip, config.local_sip_port);
-    from_uri_str = pj_str(from_uri_buf);
-
-    status = pjsip_endpt_create_request(sip_endpt, &cancel_method,
-                                        &target_uri_str,
-                                        &from_uri_str,
-                                        &target_uri_str,
-                                        NULL,
-                                        &current_session.call_id,
-                                        current_session.invite_cseq,
-                                        NULL, &tdata);
+    status = pjsip_endpt_create_cancel(sip_endpt, outgoing_invite_tdata, &tdata);
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to create CANCEL request: %d", status));
         return status;
-    }
-
-    pjsip_from_hdr *from_hdr = (pjsip_from_hdr*)
-        pjsip_msg_find_hdr(tdata->msg, PJSIP_H_FROM, NULL);
-    if (from_hdr && current_session.local_tag.slen > 0) {
-        pj_strdup(tdata->pool, &from_hdr->tag, &current_session.local_tag);
-    }
-
-    pjsip_to_hdr *to_hdr = (pjsip_to_hdr*)
-        pjsip_msg_find_hdr(tdata->msg, PJSIP_H_TO, NULL);
-    if (to_hdr && current_session.remote_tag.slen > 0) {
-        pj_strdup(tdata->pool, &to_hdr->tag, &current_session.remote_tag);
     }
 
     status = pjsip_endpt_send_request_stateless(sip_endpt, tdata, NULL, NULL);
@@ -651,6 +633,10 @@ static pj_status_t send_invite_request(void) {
     ct_hdr = pjsip_generic_string_hdr_create(tdata->pool, &ct_name, &ct_value);
     pjsip_msg_add_hdr(tdata->msg, (pjsip_hdr*)ct_hdr);
 
+    release_outgoing_invite_tdata();
+    pjsip_tx_data_add_ref(tdata);
+    outgoing_invite_tdata = tdata;
+
     // Send INVITE
     status = pjsip_endpt_send_request_stateless(sip_endpt, tdata, NULL, NULL);
     if (status != PJ_SUCCESS) {
@@ -768,6 +754,11 @@ pj_status_t sip_calling_terminate_call(void) {
     if (current_session.state == SIP_CALL_STATE_ESTABLISHED) {
         // Send BYE for established calls (both incoming and outgoing)
         send_bye_request();
+    } else if (current_session.direction == SIP_CALL_DIRECTION_OUTGOING &&
+               (current_session.state == SIP_CALL_STATE_CALLING ||
+                current_session.state == SIP_CALL_STATE_RINGING)) {
+        // Cancel the pending INVITE so upstream proxies stop remote ringing.
+        send_cancel_request();
     }
 
     set_call_state(SIP_CALL_STATE_IDLE);

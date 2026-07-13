@@ -10,6 +10,7 @@ typedef struct {
     void (*reboot_device)(void* user_data);
     void (*take_snapshot)(void* user_data);
     void (*simulate_ding)(void* user_data);
+    void (*simulate_handset_answered)(void* user_data);
     void (*set_video_enabled)(int enabled, void* user_data);
     void (*set_video_bitrate)(int bitrate_kbps, void* user_data);
     void (*set_sip_outgoing_call_enabled)(int enabled, void* user_data);
