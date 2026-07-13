@@ -983,10 +983,20 @@ static int flash_file(const char *image_path, size_t image_size,
     }
     sync();
     if (fsync(flash_fd) != 0) {
-        log_line(stderr, "[!] fsync(%s): %s", FLASH_DEVICE, strerror(errno));
-        close(image_fd);
-        close(flash_fd);
-        return -1;
+        int fsync_errno = errno;
+
+        if (fsync_errno == EINVAL || fsync_errno == ENOTTY ||
+            fsync_errno == EOPNOTSUPP || fsync_errno == ENOSYS) {
+            log_line(stderr,
+                     "[*] fsync(%s) is not supported (%s); continuing with read-back verification",
+                     FLASH_DEVICE, strerror(fsync_errno));
+        } else {
+            log_line(stderr, "[!] fsync(%s): %s", FLASH_DEVICE,
+                     strerror(fsync_errno));
+            close(image_fd);
+            close(flash_fd);
+            return -1;
+        }
     }
     close(image_fd);
     close(flash_fd);
