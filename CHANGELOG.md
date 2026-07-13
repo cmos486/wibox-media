@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.1](https://github.com/segator/wibox-media/compare/v0.16.0...v0.16.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* cancel remote ringing on handset answer ([86bbbf8](https://github.com/segator/wibox-media/commit/86bbbf8763c25506b67d5accac9eb4d19718bf15))
+* cancel remote ringing on physical handset answer ([56e0e1e](https://github.com/segator/wibox-media/commit/56e0e1e9e8ac336b96246a9af453ed2dcf887a30))
+
 ## [0.16.0](https://github.com/segator/wibox-media/compare/v0.15.0...v0.16.0) (2026-07-11)
 
 
