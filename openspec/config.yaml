@@ -1,0 +1,25 @@
+schema: spec-driven
+
+context: |
+  Product: WiBox Media custom firmware for the Fermax WiBox GK7102S intercom.
+  Runtime: C daemon on ARM11/uClibc. Python and shell are build, test and support tooling only.
+  Ownership: wibox-media-daemon owns UART, SIP, audio, video, MQTT and updater control.
+  Hardware: /dev/ttySGK1 controls the intercom. Sofia is boot warmup only and is not used per call.
+  Compatibility: Home Assistant media_state is intentionally limited to idle, ringing and established.
+  Safety: Preserve physical handset behavior, audio/video stability and OTA recovery. Do not add hardware
+  commands, deploy or flash as a side effect of a specification task.
+  Testing: Host tests include MQTT discovery/integration and deterministic call-flow E2E scenarios.
+  Documentation: Product behavior belongs in docs/. Reverse-engineering evidence belongs in research/.
+  Hygiene: Generated firmware images, binaries and device artifacts stay out of git.
+
+rules:
+  proposal:
+    - Keep each change focused on one product capability.
+    - Include explicit Non-goals and Safety sections for hardware-facing behavior.
+  design:
+    - Identify whether a component observes state or controls hardware.
+    - Preserve the existing daemon architecture unless the proposal explicitly justifies a change.
+    - Describe MQTT retention and reconnect behavior for every MQTT contract change.
+  tasks:
+    - Map each behavioral scenario to an automated test or an explicit hardware validation step.
+    - Keep deployment and flashing as separate, explicitly approved tasks.

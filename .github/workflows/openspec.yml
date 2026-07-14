@@ -1,0 +1,39 @@
+name: OpenSpec
+
+on:
+  pull_request:
+    paths:
+      - "openspec/**"
+      - ".codex/skills/openspec-*/**"
+      - ".github/workflows/openspec.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "openspec/**"
+      - ".codex/skills/openspec-*/**"
+      - ".github/workflows/openspec.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate specifications
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENSPEC_TELEMETRY: "0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Validate OpenSpec artifacts
+        run: >-
+          npm exec --yes --package=@fission-ai/openspec@1.6.0 --
+          openspec validate --all --strict --no-interactive
