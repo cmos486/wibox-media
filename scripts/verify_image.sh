@@ -91,8 +91,8 @@ if ! grep -q "^hardware_watchdog_timeout_seconds=30" "${ROOT}/etc/sip_media.conf
   exit 9
 fi
 if ! grep -q "^WATCHDOG_MODULE=/ko/extdrv/goke_wdt.ko" "${ROOT}/run.sh" ||
-   ! grep -q "insmod.*init_mode=2.*soft_noboot=0.*nowayout=0" "${ROOT}/run.sh"; then
-  echo "[!] run.sh does not load the stoppable production watchdog" >&2
+   ! grep -q "insmod.*init_mode=4.*soft_noboot=0.*nowayout=0" "${ROOT}/run.sh"; then
+  echo "[!] run.sh does not load the reset-capable stoppable production watchdog" >&2
   exit 9
 fi
 if ! grep -q "wibox-firmware-update-critical" "${ROOT}/bin/app_watchdog.sh"; then

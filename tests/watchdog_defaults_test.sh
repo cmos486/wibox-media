@@ -17,7 +17,7 @@ for file in src/sip_media/sip_media.conf.default include/etc/sip_media.conf.defa
 done
 
 grep -q '^WATCHDOG_MODULE=/ko/extdrv/goke_wdt.ko$' include/run.sh
-grep -q 'insmod.*init_mode=2.*soft_noboot=0.*nowayout=0.*tmr_atboot=0.*tmr_margin=30' include/run.sh
+grep -q 'insmod.*init_mode=4.*soft_noboot=0.*nowayout=0.*tmr_atboot=0.*tmr_margin=30' include/run.sh
 grep -q 'wibox-firmware-update-critical' include/bin/app_watchdog.sh
 grep -q 'WIBOX_OTA_GUARD_PATH' src/sip_media/hardware_watchdog.c
 grep -q 'test-watchdog-guard' src/firmware_update.c
