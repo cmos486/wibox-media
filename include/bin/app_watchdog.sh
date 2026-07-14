@@ -8,7 +8,13 @@ APP_PATH="$2"
 LOG_FILE="${3:-/var/log/${APP_NAME}.log}"
 RESTART_DELAY="${4:-5}"
 LOG_MAX_SIZE="${5:-100}"  # KB
-OTA_GUARD="/tmp/wibox-firmware-update-critical"
+OTA_GUARD="${WIBOX_OTA_GUARD_PATH:-/tmp/wibox-firmware-update-critical}"
+LOG_ROTATE_INTERVAL="${WIBOX_LOG_ROTATE_INTERVAL_SECONDS:-300}"
+APP_PID=""
+
+case "$LOG_ROTATE_INTERVAL" in
+    ''|*[!0-9]*|0) LOG_ROTATE_INTERVAL=300 ;;
+esac
 
 # Validation
 if [ -z "$APP_NAME" ] || [ -z "$APP_PATH" ]; then
@@ -36,7 +42,7 @@ log_rotator() {
     printf '%s\n' "wibox-logrotate" > /proc/self/comm 2>/dev/null || true
 
     while true; do
-        sleep 300  # Check every 5 minutes
+        sleep "$LOG_ROTATE_INTERVAL"
 
         if [ -f "$LOG_FILE" ]; then
             # Check file size (in KB)
@@ -60,8 +66,12 @@ LOG_ROTATOR_PID=$!
 
 # Trap to clean up background process when script exits
 cleanup() {
+    trap - EXIT INT TERM
     echo "$(date): Cleaning up background processes..." >> "$LOG_FILE"
-    kill $LOG_ROTATOR_PID 2>/dev/null
+    if [ -n "${APP_PID:-}" ]; then
+        kill "$APP_PID" 2>/dev/null || true
+    fi
+    kill "$LOG_ROTATOR_PID" 2>/dev/null || true
     exit 0
 }
 
@@ -114,7 +124,7 @@ while true; do
 
     # Start the application with logging (busybox compatible with immediate flushing)
     # Method 1: Try script command for line buffering (creates PTY)
-    if command -v script >/dev/null 2>&1; then
+    if [ "${WIBOX_WATCHDOG_DIRECT:-0}" != "1" ] && command -v script >/dev/null 2>&1; then
         # script creates a pseudo-terminal which forces line buffering
         # Filter out carriage returns (^M) that script can introduce
         script -q -c "$APP_PATH" /dev/null 2>&1 | tr -d '\r' | tee -a "$LOG_FILE" >/dev/null &

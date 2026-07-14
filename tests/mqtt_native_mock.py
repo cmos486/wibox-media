@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import socket
 import struct
 import subprocess
@@ -9,8 +10,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HARNESS = Path("/tmp/wibox_mqtt_native_harness")
+HARNESS = Path(os.environ.get("WIBOX_MQTT_HARNESS", "/tmp/wibox_mqtt_native_harness"))
 PORT = 18883
+ACTIVE_CALL_ID = "1a2b3c4d-00000001"
 
 
 def enc_remaining(length):
@@ -57,59 +59,98 @@ def publish(topic, payload, retain=False):
     return packet(0x31 if retain else 0x30, body)
 
 
-def broker(published, retained_topics):
+def send_initial_commands(conn):
+    conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/door/open/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/firmware/update/check/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/firmware/update/install/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/system/reboot/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/developer/simulate_ding/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/developer/simulate_handset_answered/set", "PRESS", retain=True))
+    conn.sendall(publish("wibox/test/video/enabled/set", "OFF", retain=True))
+    conn.sendall(publish("wibox/test/rtsp/enabled/set", "ON", retain=True))
+    conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "2048", retain=True))
+    conn.sendall(publish("wibox/test/call/timeout_seconds/set", "45", retain=True))
+    conn.sendall(publish("wibox/test/snapshot/ring_delay_ms/set", "1500", retain=True))
+    conn.sendall(publish("wibox/test/call_forward/enabled/set", "OFF", retain=True))
+    conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS"))
+    conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS"))
+    conn.sendall(publish("wibox/test/door/open/set", "PRESS"))
+    conn.sendall(publish("wibox/test/developer/simulate_ding/set", "PRESS"))
+    conn.sendall(publish("wibox/test/developer/mode/set", "ON"))
+    conn.sendall(publish("wibox/test/developer/simulate_ding/set", "PRESS"))
+    conn.sendall(publish("wibox/test/developer/simulate_handset_answered/set", "PRESS"))
+    conn.sendall(publish("wibox/test/developer/mode/set", "OFF"))
+    conn.sendall(publish("wibox/test/developer/simulate_ding/set", "PRESS"))
+    conn.sendall(publish("wibox/test/system/reboot/set", "PRESS"))
+    conn.sendall(publish("wibox/test/system/reboot/set", "PRESS"))
+    conn.sendall(publish("wibox/test/call/outgoing_enabled/set", "OFF"))
+    conn.sendall(publish("wibox/test/call/target_uri/set", "sip:3000@example.test"))
+    conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "not-a-number"))
+    conn.sendall(publish("wibox/test", "CONFIG"))
+
+
+def handle_connection(conn, session_index, published, retained_topics,
+                      session_publishes, broker_errors):
+    conn.settimeout(10)
+    typ, _ = read_packet(conn)
+    if typ != 0x10:
+        broker_errors.append(f"session {session_index}: missing CONNECT")
+        return
+    conn.sendall(packet(0x20, b"\x00\x00"))
+
+    typ, payload = read_packet(conn)
+    if typ != 0x82:
+        broker_errors.append(f"session {session_index}: missing SUBSCRIBE")
+        return
+    packet_id = payload[:2]
+    conn.sendall(packet(0x90, packet_id + b"\x00\x00"))
+
+    deadline = time.time() + 10
+    sent_commands = False
+    while time.time() < deadline:
+        try:
+            typ, payload = read_packet(conn)
+        except socket.timeout:
+            continue
+        if typ is None:
+            return
+        if (typ & 0xF0) == 0x30 and len(payload) >= 2:
+            topic_len = struct.unpack("!H", payload[:2])[0]
+            topic = payload[2 : 2 + topic_len].decode(errors="replace")
+            body = payload[2 + topic_len :].decode(errors="replace")
+            published.append((topic, body))
+            session_publishes.append((session_index, topic, body))
+            if typ & 0x01:
+                retained_topics.append(topic)
+            if not sent_commands and topic == "wibox/test":
+                sent_commands = True
+                if session_index == 0:
+                    send_initial_commands(conn)
+                else:
+                    conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "3072"))
+            if session_index == 0 and topic == "wibox/test/call/id" and body == ACTIVE_CALL_ID:
+                return
+        elif typ == 0xC0:
+            conn.sendall(packet(0xD0))
+
+
+def broker(published, retained_topics, session_publishes, broker_errors):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("127.0.0.1", PORT))
-        server.listen(1)
-        conn, _ = server.accept()
-        with conn:
-            conn.settimeout(10)
-            typ, _ = read_packet(conn)
-            if typ != 0x10:
+        server.listen(2)
+        server.settimeout(15)
+        for session_index in range(2):
+            try:
+                conn, _ = server.accept()
+            except (OSError, socket.timeout) as exc:
+                broker_errors.append(f"session {session_index}: accept failed: {exc}")
                 return
-            conn.sendall(packet(0x20, b"\x00\x00"))
-
-            typ, payload = read_packet(conn)
-            if typ != 0x82:
-                return
-            packet_id = payload[:2]
-            conn.sendall(packet(0x90, packet_id + b"\x00\x00"))
-
-            deadline = time.time() + 5
-            sent_commands = False
-            while time.time() < deadline:
-                try:
-                    typ, payload = read_packet(conn)
-                except socket.timeout:
-                    continue
-                if typ is None:
-                    return
-                if (typ & 0xF0) == 0x30 and len(payload) >= 2:
-                    topic_len = struct.unpack("!H", payload[:2])[0]
-                    topic = payload[2 : 2 + topic_len].decode(errors="replace")
-                    body = payload[2 + topic_len :].decode(errors="replace")
-                    published.append((topic, body))
-                    if typ & 0x01:
-                        retained_topics.append(topic)
-                    if not sent_commands and topic == "wibox/test":
-                        sent_commands = True
-                        conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS", retain=True))
-                        conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS", retain=True))
-                        conn.sendall(publish("wibox/test/door/open/set", "PRESS", retain=True))
-                        conn.sendall(publish("wibox/test/firmware/update/check/set", "PRESS", retain=True))
-                        conn.sendall(publish("wibox/test/firmware/update/install/set", "PRESS", retain=True))
-                        conn.sendall(publish("wibox/test/video/enabled/set", "OFF", retain=True))
-                        conn.sendall(publish("wibox/test/rtsp/enabled/set", "ON", retain=True))
-                        conn.sendall(publish("wibox/test/video/bitrate_kbps/set", "2048", retain=True))
-                        conn.sendall(publish("wibox/test/call/timeout_seconds/set", "45", retain=True))
-                        conn.sendall(publish("wibox/test/snapshot/ring_delay_ms/set", "1500", retain=True))
-                        conn.sendall(publish("wibox/test/call_forward/enabled/set", "OFF", retain=True))
-                        conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS"))
-                        conn.sendall(publish("wibox/test/snapshot/take/set", "PRESS"))
-                        conn.sendall(publish("wibox/test/door/open/set", "PRESS"))
-                elif typ == 0xC0:
-                    conn.sendall(packet(0xD0))
+            with conn:
+                handle_connection(conn, session_index, published, retained_topics,
+                                  session_publishes, broker_errors)
 
 
 def main():
@@ -129,21 +170,39 @@ def main():
         "-o",
         str(HARNESS),
     ]
+    if os.environ.get("WIBOX_COVERAGE") == "1":
+        build[1:1] = ["-O0", "--coverage"]
     subprocess.run(build, cwd=ROOT, check=True)
 
     published = []
     retained_topics = []
-    thread = threading.Thread(target=broker, args=(published, retained_topics), daemon=True)
+    session_publishes = []
+    broker_errors = []
+    thread = threading.Thread(target=broker,
+                              args=(published, retained_topics, session_publishes,
+                                    broker_errors), daemon=True)
     thread.start()
     time.sleep(0.1)
 
     proc = subprocess.run([str(HARNESS)], cwd=ROOT, text=True, capture_output=True)
-    thread.join(timeout=2)
+    thread.join(timeout=5)
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
 
     if proc.returncode != 0:
         return proc.returncode
+    if thread.is_alive():
+        print("mock broker did not finish", file=sys.stderr)
+        return 1
+    if broker_errors:
+        print("; ".join(broker_errors), file=sys.stderr)
+        return 1
+    if (1, "wibox/test/call/id", ACTIVE_CALL_ID) not in session_publishes:
+        print("active call ID was not restored after MQTT reconnect", file=sys.stderr)
+        return 1
+    if (1, "wibox/test/media/state", "ringing") not in session_publishes:
+        print("active media state was not restored after MQTT reconnect", file=sys.stderr)
+        return 1
     if not any(topic.startswith("homeassistant/") for topic, _ in published):
         print("missing Home Assistant discovery publish", file=sys.stderr)
         return 1
@@ -171,6 +230,17 @@ def main():
     if ("wibox/test/call/id", "none") not in published or \
        ("wibox/test/call/id", "1a2b3c4d-00000001") not in published:
         print("missing call ID lifecycle publishes", file=sys.stderr)
+        return 1
+    if ("wibox/test/system/reboot/availability", "offline") not in published:
+        print("missing one-shot reboot availability", file=sys.stderr)
+        return 1
+    if ("wibox/test/developer/simulate_ding/availability", "online") not in published or \
+       ("wibox/test/developer/simulate_ding/availability", "offline") not in published:
+        print("missing developer mode availability lifecycle", file=sys.stderr)
+        return 1
+    if ("wibox/test/call/outgoing_enabled", "OFF") not in published or \
+       ("wibox/test/call/target_uri", "sip:3000@example.test") not in published:
+        print("missing outgoing SIP runtime state", file=sys.stderr)
         return 1
     if "wibox/test/call/id" not in retained_topics:
         print("call ID state must be retained", file=sys.stderr)
@@ -237,6 +307,22 @@ def main():
     if not any(topic.endswith("_snapshot/config") and '"image_encoding":"b64"' in payload
                for topic, payload in published):
         print("missing snapshot image Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if not any(topic == "wibox/test/snapshot/image" and body.startswith("/9gB")
+               for topic, body in published):
+        print("missing base64 snapshot payload", file=sys.stderr)
+        return 1
+    uart_events = [json.loads(payload) for topic, payload in published
+                   if topic == "wibox/test/uart/event"]
+    if not any(event.get("event_type") == "alarm_report" and
+               event.get("alias") == "ALARM_REPORT" and
+               event.get("direction") == "in" and event.get("known") is True
+               for event in uart_events):
+        print("missing decoded RX UART event", file=sys.stderr)
+        return 1
+    if not any(event.get("event_type") == "start_call" and
+               event.get("direction") == "tx" for event in uart_events):
+        print("missing TX UART event", file=sys.stderr)
         return 1
     if ("wibox/test/snapshot/take/availability", "offline") not in published:
         print("missing snapshot disabled availability publish", file=sys.stderr)

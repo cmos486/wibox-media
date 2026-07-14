@@ -35,3 +35,4 @@ if [ "$COUNT" -ne 18 ]; then
 fi
 
 echo "OpenSpec capability coverage OK: $COUNT capabilities"
+python3 scripts/verify_spec_test_coverage.py

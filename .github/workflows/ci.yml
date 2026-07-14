@@ -24,13 +24,8 @@ jobs:
       - name: Install host test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential python3
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libssl-dev python3
 
-      - name: MQTT integration regression
-        run: make test-mqtt
-
-      - name: Call workflow E2E matrix
-        run: make test-call-flow
-
-      - name: Watchdog defaults regression
-        run: make test-watchdog
+      - name: Run complete host regression suite
+        run: make test

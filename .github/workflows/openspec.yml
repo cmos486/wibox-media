@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "openspec/**"
+      - "scripts/verify_openspec_coverage.sh"
+      - "scripts/verify_spec_test_coverage.py"
+      - "tests/device_acceptance.sh"
       - ".codex/skills/openspec-*/**"
       - ".github/workflows/openspec.yml"
   push:
@@ -11,6 +14,9 @@ on:
       - main
     paths:
       - "openspec/**"
+      - "scripts/verify_openspec_coverage.sh"
+      - "scripts/verify_spec_test_coverage.py"
+      - "tests/device_acceptance.sh"
       - ".codex/skills/openspec-*/**"
       - ".github/workflows/openspec.yml"
 

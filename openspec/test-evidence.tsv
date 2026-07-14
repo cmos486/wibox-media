@@ -1,0 +1,28 @@
+evidence_id	mode	command	artifact	description
+host.mqtt	host	make test-mqtt	tests/mqtt_native_mock.py	Broker MQTT real simulado, discovery, retained commands, callbacks y reconexion
+host.call-flow	host	make test-call-flow	tests/call_flow_e2e.c	Matriz determinista de ciclos de llamada fisicos, simulados, SIP y timeout
+host.call-session	host	make test-call-session-edge	tests/call_session_edge_test.c	Identidad, terminales idempotentes y secuencias concurrentes
+host.config	host	make test-config	tests/config_coverage_test.c	Defaults, parser, compatibilidad, secretos y todas las claves
+host.runtime-config	host	make test-runtime-config	tests/runtime_config_test.c	Normalizacion y limites de configuracion en runtime
+host.uart	host	make test-uart-protocol	tests/uart_protocol_test.c	Tabla completa, decode y formato de frames UART
+host.intercom	host	make test-intercom	tests/intercom_hw_mock_test.c	Frames salientes exactos y fallos del tty simulado
+host.sip-sdp	host	make test-sip-sdp	tests/sip_sdp_test.c	Contrato SDP PCMA, telephone-event y H264
+host.sip-calling	host	make test-sip-calling	tests/sip_calling_mock_test.c	PJSIP simulado con INVITE, respuestas, ACK, CANCEL, BYE, re-INVITE, timeout y colisiones
+host.sip-media	host	make test-sip-media-orchestration	tests/sip_media_orchestration_test.c	Orquestador real con fronteras simuladas para DTMF, UART, MQTT, audio y estados de llamada
+host.rtsp	host	make test-rtsp	tests/rtsp_integration_test.c	Servidor TCP RTSP real, auth, tracks, RTP y cambios dinamicos
+host.prometheus	host	make test-prometheus	tests/prometheus_integration_test.c	HTTP health, metricas, contadores y metadata
+host.audio-hw	host	make test-audio-hw	tests/audio_hw_mock_test.c	GADI y GPIO simulados, errores, limites y ciclo de audio
+host.video-worker	host	make test-video-worker	tests/video_worker_mock_test.c	Propagacion de opciones al bridge y captura de snapshot
+host.h264	host	make test-h264-annexb	tests/h264_annexb_test.c	NAL Annex-B, SPS/PPS/IDR, FU-A, marker y fallos de memoria
+host.snapshot-file	host	make test-snapshot-file	tests/snapshot_file_test.c	Publicacion atomica, escrituras parciales y fallos de filesystem
+host.hardware-watchdog	host	make test-hardware-watchdog	tests/hardware_watchdog_mock_test.c	Watchdog de kernel simulado, heartbeat, stale, disarm y OTA
+host.app-watchdog	host	make test-app-watchdog	tests/app_watchdog_integration_test.sh	Reinicio de daemon, guardas OTA y rotacion en sandbox
+host.firmware-updater	host	make test-firmware-update	tests/firmware_update_mock_test.c	MTD simulado, erase/write/readback, checksum, guardas y reboot
+host.coverage	host	make coverage	tests/code_coverage.py	Gates de linea y rama por modulo critico
+contract.runtime	contract	make test-runtime-contract	tests/runtime_contract_test.py	Cableado productivo de llamadas, media, boot, release e imagen
+contract.image	contract	make verify-image	scripts/verify_image.sh	Invariantes del cramfs y exclusion de artefactos legacy
+device.core	device	WIBOX_DEVICE_TEST=1 tests/device_acceptance.sh core	tests/device_acceptance.sh	Boot y proceso unico observados en GK7102S
+device.media	device	WIBOX_DEVICE_TEST=1 tests/device_acceptance.sh media	tests/device_acceptance.sh	Portal, telefonillo, audio analogico, video D1, RTSP y snapshot reales
+device.ota	device	WIBOX_DEVICE_TEST=1 tests/device_acceptance.sh ota	tests/device_acceptance.sh	OTA, reboot, guardas y recuperacion comprobados en hardware
+device.install	device	WIBOX_DEVICE_TEST=1 tests/device_acceptance.sh install	tests/device_acceptance.sh	Primera instalacion y recuperacion comprobadas en hardware
+device.network	device	WIBOX_DEVICE_TEST=1 tests/device_acceptance.sh network	tests/device_acceptance.sh	Servicios y politica de exposicion comprobados en la LAN real

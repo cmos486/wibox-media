@@ -49,7 +49,7 @@ int intercom_send_command(intercom_cmd_t cmd) {
 
     // Find command definition
     intercom_command_def_t* cmd_def = NULL;
-    int i;
+    size_t i;
     for (i = 0; i < NUM_COMMANDS; i++) {
         if (command_defs[i].cmd == cmd) {
             cmd_def = &command_defs[i];

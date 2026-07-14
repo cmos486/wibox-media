@@ -1,10 +1,39 @@
 #include "video_worker.h"
 
 #include <stdio.h>
+#include <string.h>
 
+#ifdef WIBOX_VIDEO_WORKER_TEST
+enum video_bridge_mode {
+    VIDEO_BRIDGE_MODE_RTP = 0,
+    VIDEO_BRIDGE_MODE_SNAPSHOT = 1,
+};
+
+struct video_bridge_options {
+    enum video_bridge_mode mode;
+    const char *remote_ip;
+    int remote_port;
+    int local_port;
+    int payload_type;
+    int bitrate_kbps;
+    int gop_n;
+    int idr_interval;
+    int brc_mode;
+    int rtsp_periodic_idr_ms;
+    const char *dumpfile;
+    long long dump_limit_bytes;
+    int rtp_sink_fd;
+    int rtp_control_fd;
+    const char *snapshot_path;
+    int jpeg_quality;
+};
+
+int video_bridge_run_options(const struct video_bridge_options *opt);
+#else
 #define main video_bridge_main
 #include "../video_rtp_bridge/video_rtp_bridge.c"
 #undef main
+#endif
 
 int video_worker_run(const char* remote_ip, int remote_port,
                      int local_port, int payload_type,

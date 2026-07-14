@@ -30,6 +30,9 @@
 #include <time.h>
 #include <sys/time.h>
 #include <ctype.h>
+
+#include "../sip_media/h264_annexb.h"
+#include "../sip_media/snapshot_file.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -107,21 +110,6 @@ static volatile sig_atomic_t get_stream_timed_out = 0;
 static volatile sig_atomic_t stop_requested = 0;
 
 static int force_idr_stream0(const char *reason);
-
-struct nal_cache {
-    uint8_t *data;
-    size_t len;
-};
-
-struct h264_scan {
-    int first_nal;
-    int last_nal;
-    int has_sps;
-    int has_pps;
-    int has_idr;
-    int has_slice;
-    int nal_count;
-};
 
 struct rtp_sender {
     int fd;
@@ -399,84 +387,34 @@ static int rtp_send_packet(struct rtp_sender *rtp, const uint8_t *payload,
     return 0;
 }
 
-static int rtp_send_nal(struct rtp_sender *rtp, const uint8_t *nal,
-                        size_t nal_len, int marker)
+static int rtp_write_h264_payload(void *context, const uint8_t *payload,
+                                  size_t payload_len, int marker)
 {
-    const size_t max_payload = 1200;
-    uint8_t fu[1202];
-    size_t pos;
-
-    if (nal_len == 0) {
-        return 0;
-    }
-    if (nal_len <= max_payload) {
-        return rtp_send_packet(rtp, nal, nal_len, marker);
-    }
-
-    fu[0] = (nal[0] & 0xe0) | 28; /* FU-A */
-    pos = 1;
-    while (pos < nal_len) {
-        size_t chunk = nal_len - pos;
-        int start = (pos == 1);
-        int end;
-        if (chunk > max_payload - 2) {
-            chunk = max_payload - 2;
-        }
-        end = (pos + chunk == nal_len);
-        fu[1] = (start ? 0x80 : 0x00) | (end ? 0x40 : 0x00) | (nal[0] & 0x1f);
-        memcpy(fu + 2, nal + pos, chunk);
-        if (rtp_send_packet(rtp, fu, chunk + 2, marker && end) < 0) {
-            return -1;
-        }
-        pos += chunk;
-    }
-    return 0;
+    return rtp_send_packet((struct rtp_sender *)context,
+                           payload, payload_len, marker);
 }
 
-static const uint8_t *find_start_code(const uint8_t *p, const uint8_t *end, int *sc_len)
+static int rtp_write_h264_parameter_set(void *context,
+                                        const uint8_t *payload,
+                                        size_t payload_len, int marker)
 {
-    while (p + 3 < end) {
-        if (p[0] == 0 && p[1] == 0 && p[2] == 1) {
-            *sc_len = 3;
-            return p;
-        }
-        if (p + 4 < end && p[0] == 0 && p[1] == 0 && p[2] == 0 && p[3] == 1) {
-            *sc_len = 4;
-            return p;
-        }
-        p++;
-    }
-    return NULL;
+    (void)marker;
+    return rtp_send_packet((struct rtp_sender *)context,
+                           payload, payload_len, 0);
 }
 
-static int rtp_send_annexb(struct rtp_sender *rtp, const uint8_t *data, size_t len)
+static int rtp_send_parameter_set(struct rtp_sender *rtp,
+                                  const uint8_t *data, size_t len)
 {
-    const uint8_t *end = data + len;
-    const uint8_t *sc;
-    int sc_len;
-    int sent = 0;
+    return h264_annexb_packetize(data, len, 1200,
+                                 rtp_write_h264_parameter_set, rtp);
+}
 
-    sc = find_start_code(data, end, &sc_len);
-    if (!sc) {
-        return rtp_send_nal(rtp, data, len, 1);
-    }
-
-    while (sc) {
-        const uint8_t *nal = sc + sc_len;
-        const uint8_t *next = find_start_code(nal, end, &sc_len);
-        const uint8_t *nal_end = next ? next : end;
-        while (nal_end > nal && nal_end[-1] == 0) {
-            nal_end--;
-        }
-        if (nal_end > nal) {
-            if (rtp_send_nal(rtp, nal, (size_t)(nal_end - nal), next == NULL) < 0) {
-                return -1;
-            }
-            sent++;
-        }
-        sc = next;
-    }
-    return sent;
+static int rtp_send_annexb(struct rtp_sender *rtp, const uint8_t *data,
+                           size_t len)
+{
+    return h264_annexb_packetize(data, len, 1200,
+                                 rtp_write_h264_payload, rtp);
 }
 
 struct worker_snapshot_state {
@@ -525,39 +463,6 @@ static int start_mjpeg_snapshot_stream(GADI_SYS_HandleT venc_handle,
         return 0;
     }
     return -1;
-}
-
-static int write_snapshot_jpeg_atomic(const char *path,
-                                      const uint8_t *data,
-                                      uint32_t size)
-{
-    char tmp_path[192];
-    FILE *fp;
-
-    if (!path || !path[0] || !data || size < 4) {
-        return -1;
-    }
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    fp = fopen(tmp_path, "wb");
-    if (!fp) {
-        printf("[SNAPSHOT_CONTROL] fopen %s failed errno=%d\n", tmp_path, errno);
-        return -1;
-    }
-    if (fwrite(data, 1, size, fp) != size) {
-        printf("[SNAPSHOT_CONTROL] fwrite %s failed errno=%d\n", tmp_path, errno);
-        fclose(fp);
-        unlink(tmp_path);
-        return -1;
-    }
-    fflush(fp);
-    fclose(fp);
-    if (rename(tmp_path, path) < 0) {
-        printf("[SNAPSHOT_CONTROL] rename %s -> %s failed errno=%d\n",
-               tmp_path, path, errno);
-        unlink(tmp_path);
-        return -1;
-    }
-    return 0;
 }
 
 static int poll_rtp_control(int control_fd, struct rtp_sender *rtp,
@@ -638,86 +543,6 @@ static int poll_rtp_control(int control_fd, struct rtp_sender *rtp,
         break;
     }
     return changed;
-}
-
-static void nal_cache_set(struct nal_cache *cache, const uint8_t *nal, size_t nal_len)
-{
-    uint8_t *copy;
-
-    if (!cache || !nal || nal_len == 0) {
-        return;
-    }
-
-    copy = malloc(nal_len);
-    if (!copy) {
-        return;
-    }
-    memcpy(copy, nal, nal_len);
-    free(cache->data);
-    cache->data = copy;
-    cache->len = nal_len;
-}
-
-static int scan_annexb_nals(const uint8_t *data, size_t len,
-                            struct h264_scan *scan,
-                            struct nal_cache *sps_cache,
-                            struct nal_cache *pps_cache)
-{
-    const uint8_t *end = data + len;
-    const uint8_t *sc;
-    int sc_len = 0;
-
-    memset(scan, 0, sizeof(*scan));
-    scan->first_nal = -1;
-    scan->last_nal = -1;
-
-    sc = find_start_code(data, end, &sc_len);
-    if (!sc) {
-        int nal = len > 0 ? (data[0] & 0x1f) : -1;
-        scan->first_nal = nal;
-        scan->last_nal = nal;
-        scan->nal_count = nal >= 0 ? 1 : 0;
-        scan->has_sps = nal == 7;
-        scan->has_pps = nal == 8;
-        scan->has_idr = nal == 5;
-        scan->has_slice = nal == 1 || nal == 5;
-        if (nal == 7) nal_cache_set(sps_cache, data, len);
-        if (nal == 8) nal_cache_set(pps_cache, data, len);
-        return nal;
-    }
-
-    while (sc) {
-        const uint8_t *nal = sc + sc_len;
-        const uint8_t *next = find_start_code(nal, end, &sc_len);
-        const uint8_t *nal_end = next ? next : end;
-        int nal_type;
-
-        while (nal_end > nal && nal_end[-1] == 0) {
-            nal_end--;
-        }
-        if (nal_end > nal) {
-            nal_type = nal[0] & 0x1f;
-            if (scan->first_nal < 0) {
-                scan->first_nal = nal_type;
-            }
-            scan->last_nal = nal_type;
-            scan->nal_count++;
-            if (nal_type == 7) {
-                scan->has_sps = 1;
-                nal_cache_set(sps_cache, nal, (size_t)(nal_end - nal));
-            } else if (nal_type == 8) {
-                scan->has_pps = 1;
-                nal_cache_set(pps_cache, nal, (size_t)(nal_end - nal));
-            } else if (nal_type == 5) {
-                scan->has_idr = 1;
-                scan->has_slice = 1;
-            } else if (nal_type == 1) {
-                scan->has_slice = 1;
-            }
-        }
-        sc = next;
-    }
-    return scan->first_nal;
 }
 
 static int force_idr_stream0(const char *reason)
@@ -1282,8 +1107,8 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     /* ── CAPTURE LOOP ── */
     printf("[CAPTURE] Starting %s capture\n", snapshot_mode ? "snapshot" : "RTP");
 
-    struct nal_cache sps_cache = {0};
-    struct nal_cache pps_cache = {0};
+    h264_nal_cache_t sps_cache = {0};
+    h264_nal_cache_t pps_cache = {0};
     long long total_bytes = 0;
     int frames = 0, idrs = 0, errors = 0;
     int seen_sid[16] = {0};
@@ -1303,7 +1128,7 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
 
     for (int i = 0; !stop_requested && errors < 30; i++) {
         GADI_VENC_StreamT st;
-        struct h264_scan scan;
+        h264_annexb_scan_t scan;
         memset(&st, 0, sizeof(st));
 
         if (poll_rtp_control(rtp_control_fd, &rtp, venc_handle, &worker_snapshot)) {
@@ -1328,7 +1153,7 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
                 usleep(1000);
                 continue;
             }
-            if (write_snapshot_jpeg_atomic(worker_snapshot.path, data, sz) == 0) {
+            if (snapshot_file_write_atomic(worker_snapshot.path, data, sz) == 0) {
                 printf("[SNAPSHOT_CONTROL] wrote sid%d %ux%u jpeg %u bytes to %s\n",
                        SNAPSHOT_STREAM_ID, SNAPSHOT_WIDTH, SNAPSHOT_HEIGHT,
                        sz, worker_snapshot.path);
@@ -1361,9 +1186,9 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
             continue;
         }
 
-        int nal = scan_annexb_nals(data, sz, &scan,
-                                   st.stream_id == 0 ? &sps_cache : NULL,
-                                   st.stream_id == 0 ? &pps_cache : NULL);
+        int nal = h264_annexb_scan(data, sz, &scan,
+                                  st.stream_id == 0 ? &sps_cache : NULL,
+                                  st.stream_id == 0 ? &pps_cache : NULL);
 
         if (st.stream_id < 16) seen_sid[st.stream_id]++;
         if (st.stream_id == 0) {
@@ -1421,10 +1246,10 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
             }
             if (send_parameter_sets) {
                 if (sps_cache.data && sps_cache.len) {
-                    rtp_send_nal(&rtp, sps_cache.data, sps_cache.len, 0);
+                    rtp_send_parameter_set(&rtp, sps_cache.data, sps_cache.len);
                 }
                 if (pps_cache.data && pps_cache.len) {
-                    rtp_send_nal(&rtp, pps_cache.data, pps_cache.len, 0);
+                    rtp_send_parameter_set(&rtp, pps_cache.data, pps_cache.len);
                 }
                 if (!sent_parameter_sets_for_first_idr) {
                     sent_parameter_sets_for_first_idr = 1;
@@ -1469,7 +1294,8 @@ static int video_bridge_run_options(const struct video_bridge_options *opt)
     for (int n = 0; n < 32; n++) if (seen_nal[n]) printf(" %d=%d", n, seen_nal[n]);
     printf("\n");
     if (fout) fclose(fout);
-    free(sps_cache.data); free(pps_cache.data);
+    h264_nal_cache_clear(&sps_cache);
+    h264_nal_cache_clear(&pps_cache);
 
     if (frames == 0 && snapshot_mode) {
         fprintf(stderr, "\nNO SNAPSHOT CAPTURED!\n");

@@ -2,7 +2,12 @@
 
 .PHONY: \
 	docker docker-shell build build-media prepare-base test verify verify-image \
-	test-mqtt test-call-flow test-watchdog \
+	test-mqtt test-call-flow test-call-session-edge test-config test-runtime-config \
+	test-uart-protocol test-sip-sdp test-sip-calling test-sip-media-orchestration test-intercom test-prometheus test-rtsp \
+	test-audio-hw test-video-worker test-h264-annexb test-snapshot-file \
+	test-firmware-update test-hardware-watchdog test-app-watchdog \
+	test-runtime-contract test-spec-coverage test-device-contract \
+	test-watchdog coverage \
 	deploy-runtime verify-device verify-runtime verify-mqtt device-status \
 	build-inside extract patch pack clean help
 
@@ -34,7 +39,13 @@ build-media: prepare-base
 	BUILD_IMAGE=$(BUILD_IMAGE) scripts/build_wibox_media_daemon.sh
 	rm -f src/sip_media/sip_media src/sip_media/wibox-media-daemon src/sip_media/*.o
 
-test: test-mqtt test-call-flow test-watchdog
+test: test-mqtt test-call-flow test-call-session-edge test-config \
+	test-runtime-config test-uart-protocol test-sip-sdp test-sip-calling \
+	test-sip-media-orchestration test-intercom \
+	test-prometheus test-rtsp test-audio-hw test-video-worker \
+	test-h264-annexb test-snapshot-file test-firmware-update \
+	test-hardware-watchdog test-app-watchdog test-runtime-contract \
+	test-spec-coverage test-device-contract test-watchdog
 
 test-mqtt:
 	tests/mqtt_native_mock.py
@@ -46,8 +57,156 @@ test-call-flow:
 			tests/call_flow_e2e.c src/sip_media/call_session.c -o "$$bin"; \
 		"$$bin"
 
+test-call-session-edge:
+	@set -e; bin=/tmp/wibox_call_session_edge_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc/sip_media \
+			tests/call_session_edge_test.c src/sip_media/call_session.c -o "$$bin"; \
+		"$$bin"
+
+test-config:
+	@set -e; bin=/tmp/wibox_config_coverage_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/config_coverage_test.c src/sip_media/config.c -o "$$bin"; \
+		"$$bin"
+
+test-runtime-config:
+	@set -e; bin=/tmp/wibox_runtime_config_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/runtime_config_test.c src/sip_media/runtime_config.c -o "$$bin"; \
+		"$$bin"
+
+test-uart-protocol:
+	@set -e; bin=/tmp/wibox_uart_protocol_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/uart_protocol_test.c src/sip_media/uart_protocol.c -o "$$bin"; \
+		"$$bin"
+
+test-sip-sdp:
+	@set -e; bin=/tmp/wibox_sip_sdp_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/sip_sdp_test.c src/sip_media/sip_sdp.c -o "$$bin"; \
+		"$$bin"
+
+test-sip-calling:
+	@set -e; bin=/tmp/wibox_sip_calling_mock_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Itests/fakes -Isrc/sip_media \
+			tests/sip_calling_mock_test.c tests/fake_pjsip.c \
+			src/sip_media/sip_sdp.c -o "$$bin"; \
+		"$$bin"
+
+test-sip-media-orchestration:
+	@set -e; bin=/tmp/wibox_sip_media_orchestration_test; \
+		trap 'rm -f "$$bin" /tmp/wibox-orchestration-test.pipe' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread \
+			-Itests/fakes -Isrc/sip_media \
+			tests/sip_media_orchestration_test.c tests/fake_pjsip.c \
+			src/sip_media/config.c src/sip_media/runtime_config.c \
+			src/sip_media/call_session.c src/sip_media/uart_protocol.c \
+			-o "$$bin"; \
+		"$$bin"
+
+test-intercom:
+	@set -e; bin=/tmp/wibox_intercom_hw_mock_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/intercom_hw_mock_test.c src/sip_media/intercom.c \
+			-Wl,--wrap=access -Wl,--wrap=open -Wl,--wrap=write -Wl,--wrap=close \
+			-o "$$bin"; \
+		"$$bin"
+
+test-prometheus:
+	@set -e; bin=/tmp/wibox_prometheus_integration_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc/sip_media \
+			-DWIBOX_VERSION='"coverage-test"' -DWIBOX_COMMIT='"test-commit"' \
+			-DWIBOX_BUILD_TIMESTAMP='"2026-07-14T00:00:00Z"' \
+			tests/prometheus_integration_test.c src/sip_media/prometheus.c -o "$$bin"; \
+		"$$bin"
+
+test-rtsp:
+	@set -e; bin=/tmp/wibox_rtsp_integration_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc/sip_media \
+			tests/rtsp_integration_test.c src/sip_media/rtsp_stream.c -o "$$bin"; \
+		"$$bin"
+
+test-audio-hw:
+	@set -e; bin=/tmp/wibox_audio_hw_mock_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -DWIBOX_AUDIO_HW_TEST \
+			-Isrc/sip_media -Iinclude/adi tests/audio_hw_mock_test.c \
+			src/sip_media/audio_hw.c -Wl,--wrap=open -Wl,--wrap=write \
+			-Wl,--wrap=close -o "$$bin"; \
+		"$$bin"
+
+test-video-worker:
+	@set -e; bin=/tmp/wibox_video_worker_mock_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -DWIBOX_VIDEO_WORKER_TEST \
+			-Isrc/sip_media tests/video_worker_mock_test.c \
+			src/sip_media/video_worker.c -o "$$bin"; \
+		"$$bin"
+
+test-h264-annexb:
+	@set -e; bin=/tmp/wibox_h264_annexb_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/h264_annexb_test.c src/sip_media/h264_annexb.c \
+			-Wl,--wrap=malloc -o "$$bin"; \
+		"$$bin"
+
+test-snapshot-file:
+	@set -e; bin=/tmp/wibox_snapshot_file_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -Isrc/sip_media \
+			tests/snapshot_file_test.c src/sip_media/snapshot_file.c \
+			-Wl,--wrap=open -Wl,--wrap=write -Wl,--wrap=fsync \
+			-Wl,--wrap=close -Wl,--wrap=rename -o "$$bin"; \
+		"$$bin"
+
+test-firmware-update:
+	@set -e; bin=/tmp/wibox_firmware_update_mock_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc \
+			tests/firmware_update_mock_test.c \
+			-Wl,--wrap=open -Wl,--wrap=write -Wl,--wrap=close \
+			-Wl,--wrap=ioctl -Wl,--wrap=umount2 -Wl,--wrap=fsync \
+			-Wl,--wrap=reboot -o "$$bin"; \
+		"$$bin"
+
+test-hardware-watchdog:
+	@set -e; bin=/tmp/wibox_hardware_watchdog_mock_test; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc/sip_media \
+			tests/hardware_watchdog_mock_test.c src/sip_media/hardware_watchdog.c \
+			-Wl,--wrap=open -Wl,--wrap=fcntl -Wl,--wrap=ioctl \
+			-Wl,--wrap=write -Wl,--wrap=close -Wl,--wrap=clock_gettime \
+			-o "$$bin"; \
+		"$$bin"
+
+test-app-watchdog:
+	sh tests/app_watchdog_integration_test.sh
+
+test-runtime-contract:
+	python3 tests/runtime_contract_test.py
+
+test-spec-coverage:
+	python3 scripts/verify_spec_test_coverage.py
+
+test-device-contract:
+	sh -n tests/device_acceptance.sh
+
 test-watchdog:
 	sh tests/watchdog_defaults_test.sh
+
+coverage:
+	python3 tests/code_coverage.py
 
 verify: test verify-image
 
@@ -116,6 +275,7 @@ help:
 	@echo "  make build-media     Build wibox-media-daemon and firmware_update only"
 	@echo "  make test            Run all host integration and E2E tests"
 	@echo "  make test-call-flow  Run the call workflow scenario matrix"
+	@echo "  make coverage        Measure line/branch coverage and enforce thresholds"
 	@echo "  make verify          Run local tests and verify release/latest"
 	@echo "  make verify-image    Inspect release/latest contents"
 	@echo "  make clean           Remove local build artifacts"

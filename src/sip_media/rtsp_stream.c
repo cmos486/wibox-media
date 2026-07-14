@@ -50,7 +50,7 @@ static int video_pipe_write_fd = -1;
 static int rtsp_port = DEFAULT_RTSP_PORT;
 static char rtsp_local_ip[64] = "127.0.0.1";
 static int rtsp_video_enabled = 1;
-static char rtsp_auth_basic[192];
+static char rtsp_auth_basic[256];
 static volatile int running = 0;
 static unsigned long video_pipe_packets = 0;
 static unsigned long video_broadcast_packets = 0;
