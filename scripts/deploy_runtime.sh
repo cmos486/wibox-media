@@ -34,6 +34,24 @@ fi
 echo "[*] Restarting temporary daemon"
 sshpass -p "${WIBOX_PASS}" ssh ${SSH_OPTS} "${WIBOX_USER}@${WIBOX_IP}" "
 set -eu
+WATCHDOG_PIDS=''
+for PROCESS in /proc/[0-9]*; do
+  [ -r \"\$PROCESS/cmdline\" ] || continue
+  COMMAND=\$(tr '\\000' ' ' < \"\$PROCESS/cmdline\" 2>/dev/null || true)
+  case \"\$COMMAND\" in
+    *'app_watchdog.sh wibox-media-daemon '*)
+      WATCHDOG_PIDS=\"\$WATCHDOG_PIDS \${PROCESS##*/}\"
+      ;;
+  esac
+done
+if [ -n \"\$WATCHDOG_PIDS\" ]; then
+  echo \"[*] Suspending installed app watchdog:\$WATCHDOG_PIDS\"
+  kill \$WATCHDOG_PIDS 2>/dev/null || true
+  sleep 1
+  for PID in \$WATCHDOG_PIDS; do
+    [ -d \"/proc/\$PID\" ] && kill -9 \"\$PID\" 2>/dev/null || true
+  done
+fi
 PIDS=\$(ps | awk '\$4 ~ /(^|\\/)wibox-media-daemon\$/ {print \$1}')
 if [ -n \"\$PIDS\" ]; then
   kill \$PIDS 2>/dev/null || true
