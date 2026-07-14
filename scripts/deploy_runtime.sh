@@ -36,6 +36,8 @@ sshpass -p "${WIBOX_PASS}" ssh ${SSH_OPTS} "${WIBOX_USER}@${WIBOX_IP}" "
 set -eu
 WATCHDOG_PIDS=''
 for PROCESS in /proc/[0-9]*; do
+  PROCESS_NAME=\$(cat \"\$PROCESS/comm\" 2>/dev/null || true)
+  [ \"\$PROCESS_NAME\" = 'app_watchdog.sh' ] || continue
   [ -r \"\$PROCESS/cmdline\" ] || continue
   COMMAND=\$(tr '\\000' ' ' < \"\$PROCESS/cmdline\" 2>/dev/null || true)
   case \"\$COMMAND\" in
@@ -52,12 +54,24 @@ if [ -n \"\$WATCHDOG_PIDS\" ]; then
     [ -d \"/proc/\$PID\" ] && kill -9 \"\$PID\" 2>/dev/null || true
   done
 fi
-PIDS=\$(ps | awk '\$4 ~ /(^|\\/)wibox-media-daemon\$/ {print \$1}')
+PIDS=''
+for PROCESS in /proc/[0-9]*; do
+  EXECUTABLE=\$(readlink \"\$PROCESS/exe\" 2>/dev/null || true)
+  EXECUTABLE=\${EXECUTABLE% (deleted)}
+  [ \"\${EXECUTABLE##*/}\" = 'wibox-media-daemon' ] || continue
+  PIDS=\"\$PIDS \${PROCESS##*/}\"
+done
 if [ -n \"\$PIDS\" ]; then
   kill \$PIDS 2>/dev/null || true
 fi
 sleep 2
-PIDS=\$(ps | awk '\$4 ~ /(^|\\/)wibox-media-daemon\$/ {print \$1}')
+PIDS=''
+for PROCESS in /proc/[0-9]*; do
+  EXECUTABLE=\$(readlink \"\$PROCESS/exe\" 2>/dev/null || true)
+  EXECUTABLE=\${EXECUTABLE% (deleted)}
+  [ \"\${EXECUTABLE##*/}\" = 'wibox-media-daemon' ] || continue
+  PIDS=\"\$PIDS \${PROCESS##*/}\"
+done
 if [ -n \"\$PIDS\" ]; then
   kill -9 \$PIDS 2>/dev/null || true
 fi
