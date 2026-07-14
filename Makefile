@@ -2,6 +2,7 @@
 
 .PHONY: \
 	docker docker-shell build build-media prepare-base test verify verify-image \
+	test-mqtt test-call-flow test-watchdog \
 	deploy-runtime verify-device verify-runtime verify-mqtt device-status \
 	build-inside extract patch pack clean help
 
@@ -33,8 +34,19 @@ build-media: prepare-base
 	BUILD_IMAGE=$(BUILD_IMAGE) scripts/build_wibox_media_daemon.sh
 	rm -f src/sip_media/sip_media src/sip_media/wibox-media-daemon src/sip_media/*.o
 
-test:
+test: test-mqtt test-call-flow test-watchdog
+
+test-mqtt:
 	tests/mqtt_native_mock.py
+
+test-call-flow:
+	@set -e; bin=/tmp/wibox_call_flow_e2e; \
+		trap 'rm -f "$$bin"' EXIT; \
+		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc/sip_media \
+			tests/call_flow_e2e.c src/sip_media/call_session.c -o "$$bin"; \
+		"$$bin"
+
+test-watchdog:
 	sh tests/watchdog_defaults_test.sh
 
 verify: test verify-image
@@ -102,7 +114,8 @@ help:
 	@echo "  make docker          Build the local firmware build image"
 	@echo "  make build           Build media binaries and release/latest"
 	@echo "  make build-media     Build wibox-media-daemon and firmware_update only"
-	@echo "  make test            Run host MQTT regression tests"
+	@echo "  make test            Run all host integration and E2E tests"
+	@echo "  make test-call-flow  Run the call workflow scenario matrix"
 	@echo "  make verify          Run local tests and verify release/latest"
 	@echo "  make verify-image    Inspect release/latest contents"
 	@echo "  make clean           Remove local build artifacts"

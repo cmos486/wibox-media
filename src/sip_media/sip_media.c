@@ -30,6 +30,7 @@
 #include "video_worker.h"    // In-daemon D1 H.264 RTP worker
 #include "rtsp_stream.h"     // Optional RTSP camera stream
 #include "hardware_watchdog.h" // Main-loop-aware hardware watchdog
+#include "call_session.h"    // Correlated call lifecycle telemetry
 
 #define THIS_FILE "wibox-media-daemon"
 #define CONFIG_FILE "/mnt/mtd/sip_media.conf"
@@ -86,6 +87,8 @@ static pthread_mutex_t intercom_reopen_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static long long intercom_last_close_ms = 0;
 static char intercom_last_close_reason[64] = "none";
 static char local_ip_addr[64] = "0.0.0.0";
+static call_session_t current_call_session;
+static int call_session_ready = 0;
 
 typedef struct {
     int open_panel_context;
@@ -107,6 +110,72 @@ static unsigned long long now_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return ((unsigned long long)tv.tv_sec * 1000ULL) + ((unsigned long long)tv.tv_usec / 1000ULL);
+}
+
+static uint32_t create_call_boot_nonce(void) {
+    uint32_t nonce = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+
+    if (fd >= 0) {
+        if (read(fd, &nonce, sizeof(nonce)) != (ssize_t)sizeof(nonce)) {
+            nonce = 0;
+        }
+        close(fd);
+    }
+    if (nonce == 0) {
+        nonce = (uint32_t)time(NULL) ^ (uint32_t)getpid() ^ (uint32_t)now_ms();
+    }
+    return nonce ? nonce : 1;
+}
+
+static void publish_call_trace_event(const call_session_event_t* event,
+                                     int new_session) {
+    if (!event) {
+        return;
+    }
+    if (new_session) {
+        mqtt_publish_call_id(event->call_id);
+    }
+    mqtt_publish_call_event(event);
+    PJ_LOG(3,(THIS_FILE,
+              "Call trace id=%s seq=%u event=%s source=%s route=%s state=%s reason=%s terminal=%d",
+              event->call_id, event->sequence, event->event_type,
+              event->source, event->route, event->media_state,
+              event->reason, event->terminal));
+    if (event->terminal) {
+        mqtt_publish_call_id(NULL);
+    }
+}
+
+static int call_trace_start(const char* source, const char* event_type,
+                            const char* media_state, const char* route,
+                            const char* reason) {
+    call_session_event_t event;
+    int rc;
+
+    if (!call_session_ready) {
+        return -1;
+    }
+    rc = call_session_start(&current_call_session, source, event_type,
+                            media_state, route, reason, time(NULL), &event);
+    if (rc > 0) {
+        publish_call_trace_event(&event, 1);
+    }
+    return rc;
+}
+
+static void call_trace_record(const char* event_type, const char* media_state,
+                              const char* route, const char* reason,
+                              int terminal) {
+    call_session_event_t event;
+
+    if (!call_session_ready) {
+        return;
+    }
+    if (call_session_record(&current_call_session, event_type, media_state,
+                            route, reason, terminal, time(NULL), &event) > 0) {
+        publish_call_trace_event(&event, 0);
+    }
 }
 
 static void mute_audio_input_for_ms(int duration_ms, const char* reason)
@@ -703,6 +772,11 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         mqtt_publish_sip_call_active(1);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("established");
+        if (call_trace_start("sip_incoming", "established", "established",
+                             "sip", "sip-established") == 0) {
+            call_trace_record("established", "established", "sip",
+                              "sip-established", 0);
+        }
         prometheus_set_call_active(1);
         prometheus_set_sip_call_active(1);
         prometheus_set_ringing(0);
@@ -725,6 +799,8 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record(new_state == SIP_CALL_STATE_FAILED ? "sip_failed" : "sip_ended",
+                          "idle", "sip", "sip-established-ended", 1);
         prometheus_set_sip_call_active(0);
         prometheus_set_ringing(0);
     }
@@ -744,6 +820,8 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record(new_state == SIP_CALL_STATE_FAILED ? "sip_failed" : "sip_cancelled",
+                          "idle", "sip", "sip-non-established-ended", 1);
         prometheus_set_sip_call_active(0);
         prometheus_set_ringing(0);
     }
@@ -1225,6 +1303,7 @@ static void unlock_door(const char* source) {
     if (intercom_send_command(INTERCOM_CMD_UNLOCK_DOOR) == 0) {
         printf("Door unlock command sent successfully\n");
         mqtt_publish_door_unlocked_pulse();
+        call_trace_record("door_opened", NULL, NULL, source, 0);
         prometheus_inc_door_unlock();
     } else {
         printf("Failed to send door unlock command\n");
@@ -1798,6 +1877,7 @@ static void* ringing_timeout_thread_func(void* arg) {
     }
     mqtt_publish_ringing(0);
     mqtt_publish_media_state("idle");
+    call_trace_record("timeout", "idle", "none", "ring-timeout", 1);
     prometheus_set_ringing(0);
     return NULL;
 }
@@ -2014,40 +2094,53 @@ static void handle_simulated_ding_trigger(void) {
         simulated_ding_panel_context_active = 1;
     }
 
-    handle_ding_trigger("serial alarm");
+    handle_ding_trigger("developer_simulation");
 }
 
 static void handle_ding_trigger(const char* source) {
     pj_status_t status;
-    int is_serial_alarm = source && strcmp(source, "serial alarm") == 0;
+    int trace_started;
+    int is_panel_alarm = source &&
+        (strcmp(source, "physical_panel") == 0 ||
+         strcmp(source, "developer_simulation") == 0);
 
     PJ_LOG(3,(THIS_FILE, "DING detected from %s - checking if we can make outgoing call",
               source ? source : "unknown"));
 
     if (sip_calling_is_call_active()) {
         PJ_LOG(2,(THIS_FILE, "DING ignored - call already active"));
+        call_trace_record("ring_ignored", NULL, NULL, "sip-call-active", 0);
         return;
     }
 
     mqtt_publish_ringing(1);
     mqtt_publish_media_state("ringing");
+    trace_started = call_trace_start(source, "ringing", "ringing", "none",
+                                     is_panel_alarm ? "alarm-report" : "ding");
+    if (trace_started == 0) {
+        call_trace_record("ring_repeated", "ringing", NULL,
+                          source ? source : "unknown", 0);
+    }
     prometheus_set_ringing(1);
     prometheus_inc_ring();
     schedule_ringing_timeout(app_config.outgoing_call_timeout);
 
-    if (is_serial_alarm) {
+    if (is_panel_alarm) {
         start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring", 1);
     }
 
     if (!app_config.sip_outgoing_call_enabled) {
         PJ_LOG(3,(THIS_FILE, "Outgoing SIP call disabled - keeping media_state=ringing only"));
+        call_trace_record("sip_disabled", "ringing", "none", "outgoing-disabled", 0);
         return;
     }
 
     PJ_LOG(3,(THIS_FILE, "Making outgoing call due to %s", source ? source : "DING"));
+    call_trace_record("sip_calling", "ringing", "sip", "outgoing-call", 0);
     status = sip_calling_make_call();
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to make outgoing call: %d", status));
+        call_trace_record("sip_call_failed", "ringing", "sip", "make-call-failed", 0);
         if (simulated_ding_panel_context_active) {
             close_intercom_call("simulated-ding-call-failed");
         }
@@ -2360,7 +2453,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_ALARM_REPORT:
         prometheus_inc_uart_alarm_report();
         report_alarm_event(1);
-        handle_ding_trigger("serial alarm");
+        handle_ding_trigger("physical_panel");
         break;
     case UART_CODE_HANG_UP_0:
     case UART_CODE_HANG_UP_1:
@@ -2371,6 +2464,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record(def->event_type, "idle", NULL, def->name, 1);
         prometheus_set_ringing(0);
         terminate_call_from_serial(def->name);
         break;
@@ -2382,6 +2476,8 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record("physical_handset_answered", "idle",
+                          "physical_handset", def->name, 1);
         prometheus_set_ringing(0);
         terminate_call_from_serial(def->name);
         break;
@@ -3066,6 +3162,12 @@ int main(int argc, char *argv[]) {
     // Print loaded configuration
     config_print(&app_config);
 
+    if (call_session_init(&current_call_session, create_call_boot_nonce()) == 0) {
+        call_session_ready = 1;
+    } else {
+        printf("Warning: Failed to initialize call trace; calls remain operational\n");
+    }
+
     // Get and display local IP
     get_local_ip(local_ip, sizeof(local_ip));
     strncpy(local_ip_addr, local_ip, sizeof(local_ip_addr) - 1);
@@ -3251,6 +3353,10 @@ int main(int argc, char *argv[]) {
     prometheus_stop();
     stop_serial_monitoring();
     stop_ding_monitoring();
+    if (call_session_ready) {
+        call_session_destroy(&current_call_session);
+        call_session_ready = 0;
+    }
 
     // Terminate any active call
     sip_calling_terminate_call();

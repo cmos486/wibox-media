@@ -76,6 +76,7 @@ int main(void) {
     wibox_config_t config;
     mqtt_callbacks_t callbacks;
     harness_state_t state;
+    call_session_event_t call_event;
     int i;
 
     memset(&callbacks, 0, sizeof(callbacks));
@@ -136,6 +137,19 @@ int main(void) {
     }
 
     mqtt_publish_door_unlocked_pulse();
+    mqtt_publish_call_id("1a2b3c4d-00000001");
+    memset(&call_event, 0, sizeof(call_event));
+    strcpy(call_event.call_id, "1a2b3c4d-00000001");
+    strcpy(call_event.event_type, "established");
+    strcpy(call_event.source, "physical_panel");
+    strcpy(call_event.route, "sip");
+    strcpy(call_event.media_state, "established");
+    strcpy(call_event.reason, "mqtt-e2e");
+    call_event.sequence = 3;
+    call_event.started_at = 1000;
+    call_event.timestamp = 1002;
+    mqtt_publish_call_event(&call_event);
+    mqtt_publish_call_id(NULL);
     mqtt_stop();
     printf("RESULT open=%d f1=%d snapshot=%d video=%d rtsp=%d bitrate=%d timeout=%d ring_snapshot_delay=%d call_forward=%d\n",
            state.open_count, state.f1_count, state.snapshot_count,

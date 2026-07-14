@@ -26,5 +26,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential python3
 
-      - name: Host MQTT regression
-        run: make test
+      - name: MQTT integration regression
+        run: make test-mqtt
+
+      - name: Call workflow E2E matrix
+        run: make test-call-flow
+
+      - name: Watchdog defaults regression
+        run: make test-watchdog

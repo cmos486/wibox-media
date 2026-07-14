@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import socket
 import struct
 import subprocess
@@ -56,7 +57,7 @@ def publish(topic, payload, retain=False):
     return packet(0x31 if retain else 0x30, body)
 
 
-def broker(published):
+def broker(published, retained_topics):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("127.0.0.1", PORT))
@@ -89,6 +90,8 @@ def broker(published):
                     topic = payload[2 : 2 + topic_len].decode(errors="replace")
                     body = payload[2 + topic_len :].decode(errors="replace")
                     published.append((topic, body))
+                    if typ & 0x01:
+                        retained_topics.append(topic)
                     if not sent_commands and topic == "wibox/test":
                         sent_commands = True
                         conn.sendall(publish("wibox/test/f1/trigger/set", "PRESS", retain=True))
@@ -129,7 +132,8 @@ def main():
     subprocess.run(build, cwd=ROOT, check=True)
 
     published = []
-    thread = threading.Thread(target=broker, args=(published,), daemon=True)
+    retained_topics = []
+    thread = threading.Thread(target=broker, args=(published, retained_topics), daemon=True)
     thread.start()
     time.sleep(0.1)
 
@@ -154,6 +158,39 @@ def main():
         return 1
     if ("wibox/test/firmware/build_timestamp", "2026-06-30T09:30:00Z") not in published:
         print("missing retained firmware build timestamp publish", file=sys.stderr)
+        return 1
+    if not any(topic.endswith("_call_id/config") and "call/id" in payload
+               for topic, payload in published):
+        print("missing call ID Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if not any(topic.endswith("_call_event/config") and "call/event" in payload and
+               "physical_handset_answered" in payload
+               for topic, payload in published):
+        print("missing call event Home Assistant discovery publish", file=sys.stderr)
+        return 1
+    if ("wibox/test/call/id", "none") not in published or \
+       ("wibox/test/call/id", "1a2b3c4d-00000001") not in published:
+        print("missing call ID lifecycle publishes", file=sys.stderr)
+        return 1
+    if "wibox/test/call/id" not in retained_topics:
+        print("call ID state must be retained", file=sys.stderr)
+        return 1
+    if "wibox/test/call/event" in retained_topics:
+        print("call events must not be retained", file=sys.stderr)
+        return 1
+    call_events = [json.loads(payload) for topic, payload in published
+                   if topic == "wibox/test/call/event"]
+    if not any(event.get("event_type") == "established" and
+               event.get("call_id") == "1a2b3c4d-00000001" and
+               event.get("sequence") == 3 and
+               event.get("source") == "physical_panel" and
+               event.get("route") == "sip" and
+               event.get("media_state") == "established" and
+               event.get("reason") == "mqtt-e2e" and
+               event.get("terminal") is False and
+               event.get("started_at") == 1000 and event.get("ts") == 1002
+               for event in call_events):
+        print("missing or invalid structured call event", file=sys.stderr)
         return 1
     if not any(topic == "wibox/test/door/unlocked" and body == "ON" for topic, body in published):
         print("missing unlock ON publish", file=sys.stderr)

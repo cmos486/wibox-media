@@ -1,6 +1,7 @@
 #ifndef WIBOX_MQTT_H
 #define WIBOX_MQTT_H
 
+#include "call_session.h"
 #include "config.h"
 #include <stddef.h>
 
@@ -43,6 +44,8 @@ void mqtt_publish_ring_snapshot_delay(int delay_ms);
 void mqtt_publish_call_forward_enabled(int enabled);
 void mqtt_publish_rtsp_enabled(int enabled);
 void mqtt_publish_media_state(const char* state);
+void mqtt_publish_call_id(const char* call_id);
+void mqtt_publish_call_event(const call_session_event_t* event);
 void mqtt_publish_firmware_version(void);
 void mqtt_publish_door_unlocked_pulse(void);
 void mqtt_publish_wifi_stats(void);

@@ -47,6 +47,8 @@ typedef struct {
     int outgoing_call_timeout;
     int ring_snapshot_delay_ms;
     int call_forward_enabled;
+    char media_state[CALL_SESSION_STATE_SIZE];
+    char call_id[CALL_SESSION_ID_SIZE];
     int firmware_update_enabled;
     char firmware_update_repo[128];
     char firmware_update_version[64];
@@ -603,6 +605,31 @@ static void publish_uart_event_config(void) {
              "\"mcu_state_0\",\"mcu_state_1\",\"cmd_down_long_1\","
              "\"cmd_down_long_2\",\"unknown_fb\"],"
              "\"icon\":\"mdi:serial-port\",%s}",
+             uid, state_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
+static void publish_call_event_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[3072];
+
+    discovery_topic(topic, sizeof(topic), "event", "call_event");
+    topic_path(state_topic, sizeof(state_topic), "call/event");
+    unique_id(uid, sizeof(uid), "call_event");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Call Event\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+             "\"event_types\":[\"ringing\",\"ring_repeated\",\"ring_ignored\","
+             "\"sip_calling\",\"sip_disabled\",\"sip_call_failed\","
+             "\"established\",\"sip_ended\",\"sip_failed\",\"sip_cancelled\","
+             "\"physical_handset_answered\",\"hang_up_0\",\"hang_up_1\","
+             "\"door_opened\",\"timeout\"],"
+             "\"icon\":\"mdi:phone-log\",%s}",
              uid, state_topic, mqtt_state.base_topic, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
@@ -1276,7 +1303,9 @@ void mqtt_publish_discovery(void) {
     publish_snapshot_button_config();
     publish_snapshot_image_config();
     publish_uart_event_config();
+    publish_call_event_config();
     publish_sensor_config("media_state", "Media State", "media/state", "", "phone");
+    publish_sensor_config("call_id", "Call ID", "call/id", "", "identifier");
     publish_sensor_config("firmware_version", "Firmware Version", "firmware/version", "", "tag");
     publish_sensor_config("firmware_commit", "Firmware Commit", "firmware/commit", "", "source-commit");
     publish_sensor_config("firmware_build_timestamp", "Firmware Build Timestamp",
@@ -1385,7 +1414,15 @@ static void mqtt_publish_developer_mode(int enabled) {
 }
 
 void mqtt_publish_media_state(const char* state) {
-    publish_suffix("media/state", state ? state : "unknown", 1);
+    const char* safe_state = state && state[0] ? state : "unknown";
+    snprintf(mqtt_state.media_state, sizeof(mqtt_state.media_state), "%s", safe_state);
+    publish_suffix("media/state", mqtt_state.media_state, 1);
+}
+
+void mqtt_publish_call_id(const char* call_id) {
+    const char* safe_call_id = call_id && call_id[0] ? call_id : "none";
+    snprintf(mqtt_state.call_id, sizeof(mqtt_state.call_id), "%s", safe_call_id);
+    publish_suffix("call/id", mqtt_state.call_id, 1);
 }
 
 void mqtt_publish_firmware_version(void) {
@@ -1482,6 +1519,27 @@ void mqtt_publish_uart_event_ex(const char* event_type, const char* alias,
              known ? "true" : "false", (long)time(NULL));
 
     topic_path(event_topic, sizeof(event_topic), "uart/event");
+    mqtt_publish_raw(event_topic, payload, 0);
+}
+
+void mqtt_publish_call_event(const call_session_event_t* event) {
+    char event_topic[256];
+    char payload[1024];
+
+    if (!mqtt_state.enabled || !mqtt_state.connected || !event) {
+        return;
+    }
+
+    snprintf(payload, sizeof(payload),
+             "{\"event_type\":\"%s\",\"call_id\":\"%s\","
+             "\"sequence\":%u,\"source\":\"%s\",\"route\":\"%s\","
+             "\"media_state\":\"%s\",\"reason\":\"%s\","
+             "\"terminal\":%s,\"started_at\":%ld,\"ts\":%ld}",
+             event->event_type, event->call_id, event->sequence,
+             event->source, event->route, event->media_state, event->reason,
+             event->terminal ? "true" : "false",
+             (long)event->started_at, (long)event->timestamp);
+    topic_path(event_topic, sizeof(event_topic), "call/event");
     mqtt_publish_raw(event_topic, payload, 0);
 }
 
@@ -1897,7 +1955,8 @@ static void* mqtt_thread_func(void* arg) {
 
         mqtt_publish_discovery();
         mqtt_publish_online();
-        mqtt_publish_media_state("idle");
+        publish_suffix("media/state", mqtt_state.media_state, 1);
+        publish_suffix("call/id", mqtt_state.call_id, 1);
         mqtt_publish_firmware_version();
         if (mqtt_state.firmware_update_enabled) {
             firmware_update_check_and_publish();
@@ -1977,6 +2036,8 @@ int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
     mqtt_state.outgoing_call_timeout = app_config->outgoing_call_timeout;
     mqtt_state.ring_snapshot_delay_ms = app_config->ring_snapshot_delay_ms;
     mqtt_state.call_forward_enabled = app_config->serial_listener_enabled ? 1 : 0;
+    snprintf(mqtt_state.media_state, sizeof(mqtt_state.media_state), "idle");
+    snprintf(mqtt_state.call_id, sizeof(mqtt_state.call_id), "none");
     mqtt_state.firmware_update_enabled = app_config->firmware_update_enabled;
     strncpy(mqtt_state.firmware_update_repo, app_config->firmware_update_repo,
             sizeof(mqtt_state.firmware_update_repo) - 1);
