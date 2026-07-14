@@ -33,6 +33,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Verify project capability coverage
+        run: ./scripts/verify_openspec_coverage.sh
+
       - name: Validate OpenSpec artifacts
         run: >-
           npm exec --yes --package=@fission-ai/openspec@1.6.0 --
