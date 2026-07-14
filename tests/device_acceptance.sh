@@ -43,7 +43,15 @@ core_checks() {
         test -x /usr/bin/app_watchdog.sh &&
         test -f /mnt/mtd/sip_media.conf &&
         test -f /etc/wibox-release &&
-        count=$(ps | grep "[w]ibox-media-daemon" | wc -l) &&
+        count=0 &&
+        for process in /proc/[0-9]*; do
+            executable=$(readlink "$process/exe" 2>/dev/null || true)
+            [ "${executable##*/}" = "wibox-media-daemon" ] || continue
+            parent_pid=$(awk "{print \$4}" "$process/stat")
+            parent_executable=$(readlink "/proc/$parent_pid/exe" 2>/dev/null || true)
+            [ "${parent_executable##*/}" = "wibox-media-daemon" ] && continue
+            count=$((count + 1))
+        done &&
         test "$count" -eq 1 &&
         test ! -e /tmp/wibox-firmware-update-critical
     '
