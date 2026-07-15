@@ -86,6 +86,19 @@ FLASHING, VERIFYING and COMPLETE as applicable.
 - THEN the guard remains present
 - AND the app watchdog does not restart the daemon from an unmounted or partial image
 
+### Requirement: Detached install execution
+
+An updater accepted through MQTT SHALL run in a separate session with standard
+input detached. Stopping the launching media daemon and closing its logging PTY
+SHALL NOT terminate the updater during OTA preparation.
+
+#### Scenario: Updater stops its launching daemon
+
+- GIVEN the media daemon accepted an MQTT install request
+- WHEN the updater enters PREPARE and stops all media-daemon processes
+- THEN the updater remains alive outside the daemon session
+- AND continues to watchdog disarm and guarded flash
+
 ### Requirement: Successful reboot and duplicate protection
 
 A normal verified update SHALL sync and reboot. Home Assistant SHALL disable the

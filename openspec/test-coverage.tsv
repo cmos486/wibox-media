@@ -59,6 +59,7 @@ firmware-updates	Mandatory read-back verification	MTD does not implement fsync	h
 firmware-updates	Mandatory read-back verification	Read-back checksum differs	host.firmware-updater
 firmware-updates	OTA critical guard	Preparation fails before flash	host.firmware-updater,host.app-watchdog
 firmware-updates	OTA critical guard	Failure occurs after erase begins	host.firmware-updater,host.app-watchdog
+firmware-updates	Detached install execution	Updater stops its launching daemon	contract.runtime,device.ota
 firmware-updates	Successful reboot and duplicate protection	Install is pressed twice	host.firmware-updater,host.mqtt,device.ota
 firmware-updates	Operator modes	Local image lacks expected MD5	host.firmware-updater
 installation-recovery	Factory backup before first flash	A stock device is prepared	device.install
