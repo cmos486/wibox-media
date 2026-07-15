@@ -60,6 +60,9 @@ progress.
 When Home Assistant sends an install request, the daemon immediately publishes
 the install button as `offline` and ignores duplicate install requests while the
 updater runs. The normal successful path is a verified flash followed by reboot.
+The updater runs in a separate session with standard input connected to
+`/dev/null`; this is required because OTA preparation deliberately stops the
+launching daemon and closes its logging pseudo-terminal.
 
 The daemon checks for updates at startup and roughly once per day. Press
 `Firmware Update Refresh` after publishing a release if you want Home Assistant

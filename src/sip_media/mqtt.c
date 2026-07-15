@@ -1272,13 +1272,13 @@ static void start_firmware_update_install(void) {
 
     mqtt_state.firmware_update_installing = 1;
     publish_firmware_update_install_availability();
-    rc = system("/usr/bin/firmware_update >/tmp/firmware_update.log 2>&1 &");
+    rc = system("/bin/setsid /usr/bin/firmware_update </dev/null >/tmp/firmware_update.log 2>&1 &");
     if (rc != 0) {
         printf("%s: failed to launch firmware update script rc=%d\n", MQTT_FILE, rc);
         mqtt_state.firmware_update_installing = 0;
         publish_firmware_update_install_availability();
     } else {
-        printf("%s: launched firmware update script\n", MQTT_FILE);
+        printf("%s: launched detached firmware updater\n", MQTT_FILE);
     }
 }
 

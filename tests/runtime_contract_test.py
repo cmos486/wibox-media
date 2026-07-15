@@ -123,6 +123,15 @@ def check_boot_and_release_contracts():
     for forbidden in ("flash_erase", "/dev/mtd", "firmware_update --image", "reboot"):
         require(forbidden not in deploy, f"development deploy became persistent: {forbidden}")
 
+    mqtt = read("src/sip_media/mqtt.c")
+    update_launch = function_body(mqtt, "start_firmware_update_install")
+    ordered(update_launch, "firmware_update_installing = 1",
+            "/bin/setsid /usr/bin/firmware_update", "if (rc != 0)")
+    for token in ("</dev/null", ">/tmp/firmware_update.log 2>&1 &"):
+        require(token in update_launch, f"firmware updater launch missing {token}")
+    require('system("/usr/bin/firmware_update' not in update_launch,
+            "firmware updater remains attached to the daemon PTY")
+
     dockerfile = read("Dockerfile")
     require(re.search(r"CRAMFS_TOOLS_COMMIT=[0-9a-f]{40}", dockerfile),
             "cramfs tools source is not pinned to a commit")
