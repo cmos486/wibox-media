@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.17.1](https://github.com/segator/wibox-media/compare/v0.17.0...v0.17.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* detach mqtt firmware updater ([2c763f4](https://github.com/segator/wibox-media/commit/2c763f48fb1838677e984a2337ebb5d9085dd491))
+* detach MQTT firmware updater ([87d00f2](https://github.com/segator/wibox-media/commit/87d00f23780f8abc2ba138081d41f40db5812d97))
+
 ## [0.17.0](https://github.com/segator/wibox-media/compare/v0.16.2...v0.17.0) (2026-07-15)
 
 
