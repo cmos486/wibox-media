@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.0](https://github.com/segator/wibox-media/compare/v0.16.2...v0.17.0) (2026-07-15)
+
+
+### Features
+
+* add call correlation and comprehensive verification ([377c363](https://github.com/segator/wibox-media/commit/377c36360cec360833003f07f065756efb2ee3b2))
+* add correlated call IDs and E2E flows ([749c50c](https://github.com/segator/wibox-media/commit/749c50c560e02cf1546187c1334db5fb282aedb2))
+
+
+### Bug Fixes
+
+* arm hardware watchdog reset mode ([d7d5ba2](https://github.com/segator/wibox-media/commit/d7d5ba22c59d12e13049a811ac53dbc9a3259938))
+* suspend release watchdog for runtime deploys ([adfe2a0](https://github.com/segator/wibox-media/commit/adfe2a0d4b44e5bd39f35b687c08a21712f8936c))
+* target runtime supervisor by process identity ([91ff128](https://github.com/segator/wibox-media/commit/91ff12826c53a7b677ffbd46bc2123ff7a6b426c))
+
 ## [0.16.2](https://github.com/segator/wibox-media/compare/v0.16.1...v0.16.2) (2026-07-13)
 
 
