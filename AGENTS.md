@@ -18,6 +18,17 @@ Fallback to `rg` for string literals, non-code files, scripts, configs and
 documentation.
 <!-- codebase-memory-mcp:end -->
 
+## OpenSpec Requirements
+
+Functional requirements and design intent live in `openspec/`.
+
+- Read `openspec/specs/` before changing behavior covered by an existing capability.
+- Use an OpenSpec change for non-trivial product behavior, protocol, state-machine or hardware-control changes.
+- Keep requirements behavior-first and scenarios concrete enough to map to automated tests.
+- Archive completed changes so accepted deltas become the current specification.
+- Do not backfill unrelated legacy behavior. Grow the specifications from real changes.
+- Run `openspec validate --all --strict` before submitting OpenSpec changes.
+
 ## Project Purpose
 
 WiBox Media is custom firmware for the Fermax WiBox GK7102S intercom. It runs a

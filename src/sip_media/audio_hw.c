@@ -10,7 +10,12 @@
 #include "adi_audio.h"
 #include "adi_sys.h"
 
+#ifdef WIBOX_AUDIO_HW_TEST
+int ap_aec_register(int *ptr_aec_handle);
+int ap_aec_unregister(int aec_handle);
+#else
 #include "../audio_bridge/ap.c"
+#endif
 
 #define THIS_FILE "audio_hw"
 

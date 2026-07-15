@@ -1,0 +1,19 @@
+# Stable product capability IDs. Keep sorted.
+access-control
+audio-media
+boot-and-runtime
+build-and-release
+call-lifecycle
+configuration
+developer-controls
+firmware-updates
+installation-recovery
+intercom-uart
+mqtt-home-assistant
+network-services
+observability
+rtsp-streaming
+runtime-resilience
+sip-calling
+snapshots
+video-media

@@ -39,7 +39,8 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates libssl-dev python3
 
       - name: Log in to GHCR
         env:

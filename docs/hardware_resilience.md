@@ -45,14 +45,20 @@ The GK7102S provides `goke_wdt.ko`. Sofia's temporary warmup wrapper loads it
 with `soft_noboot=1` and unloads it when Sofia exits, which explains why
 `/dev/watchdog` previously disappeared before the media daemon started. The
 normal boot always unloads any warmup instance and reloads the module with
-`init_mode=2`, `soft_noboot=0`, `nowayout=0`, `tmr_atboot=0` and a 30-second
+`init_mode=4`, `soft_noboot=0`, `nowayout=0`, `tmr_atboot=0` and a 30-second
 margin before starting WiBox Media. Keeping `nowayout=0` is mandatory so
 normal shutdown and OTA can disarm it.
 
-On the tested kernel, freezing the daemon caused a hardware reset even when
-the module had been loaded with `soft_noboot=1`. That parameter must not be
-treated as a non-reboot guarantee; non-destructive validation uses graceful
-disarm and the updater guard, while expiry validation is expected to reboot.
+The module metadata describes `0x2` as reset and `0x4` as IRQ, but this
+GK7102S driver build implements the opposite mapping. Disassembly, kernel logs
+and physical expiry tests agree: `init_mode=2` only logs `Watchdog timer
+expired!` and leaves the device running, while `init_mode=4` resets it after
+the configured timeout. A controlled test on 2026-07-14 froze the daemon and
+the device went offline after approximately 31 seconds, then returned with a
+fresh uptime. CI and image verification pin mode `4` to prevent this safety
+regression. `soft_noboot` must not be treated as the mode selector;
+non-destructive validation uses graceful disarm and the updater guard, while
+expiry validation is expected to reboot.
 
 ## OTA safety
 

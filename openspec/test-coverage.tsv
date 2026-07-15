@@ -1,0 +1,135 @@
+capability	requirement	scenario	evidence_ids
+access-control	Main door unlock	MQTT opens the main door	host.mqtt,host.intercom,contract.runtime
+access-control	Main door unlock	DTMF opens the main door	host.intercom,host.sip-media,contract.runtime
+access-control	Unlock feedback pulse	Home Assistant observes an unlock	host.mqtt,contract.runtime
+access-control	Auxiliary F1 pulse	F1 is triggered	host.mqtt,host.intercom
+access-control	Physical call-forward control	Call forwarding is enabled	host.mqtt,host.intercom
+access-control	Action replay protection	Broker replays an old action	host.mqtt
+audio-media	Direct PCMA audio	SIP audio starts	host.audio-hw,host.sip-sdp,host.sip-media,host.call-flow
+audio-media	Shared audio engine	SIP ends while RTSP audio remains	host.rtsp,host.sip-media,host.call-flow,contract.runtime
+audio-media	Shared audio engine	Last consumer leaves	host.rtsp,host.sip-media,contract.runtime
+audio-media	Audio-only operation	Global video is disabled	host.audio-hw,host.sip-sdp,host.sip-media,host.call-flow
+audio-media	Conservative analog tuning	The panel line opens	host.audio-hw,device.media
+audio-media	Fixed-gain processing	Ambient level changes suddenly	host.audio-hw,device.media
+boot-and-runtime	Production boot sequence	Normal custom boot	contract.runtime,device.core
+boot-and-runtime	Single packaged media runtime	Runtime processes are inspected	contract.image,contract.runtime,device.core
+boot-and-runtime	Persistent identity and configuration	First custom boot has no daemon config	host.config,contract.runtime,device.core
+boot-and-runtime	Persistent identity and configuration	Device reboots	host.config,contract.runtime,device.core
+boot-and-runtime	Network recovery after warmup	Warmup drops WiFi	contract.runtime,device.core
+boot-and-runtime	Boot status indication	Production startup completes	contract.runtime,device.core
+boot-and-runtime	Local boot extension	A local post hook exists	contract.runtime,device.core
+build-and-release	Pinned build environment	A contributor builds firmware	contract.runtime,contract.image
+build-and-release	Host regression suite	Host CI runs	host.coverage,contract.runtime
+build-and-release	Firmware image invariants	A required artifact is missing	contract.image
+build-and-release	Legacy artifact exclusion	A legacy binary is accidentally packaged	contract.image
+build-and-release	Development deployment is non-persistent	A development runtime is deployed	contract.runtime
+build-and-release	Release assets	A release is published	contract.runtime,contract.image
+build-and-release	Generated-artifact hygiene	Source changes are prepared for review	contract.runtime
+call-lifecycle	Stable call identity	A new physical ring starts a session	host.call-session,host.call-flow
+call-lifecycle	Stable call identity	A repeated ring belongs to the active session	host.call-session,host.call-flow
+call-lifecycle	Stable call identity	A terminal event closes the session	host.call-session,host.call-flow
+call-lifecycle	Structured MQTT call events	An observed transition is published	host.call-session,host.mqtt
+call-lifecycle	Structured MQTT call events	Home Assistant discovers call observability	host.mqtt
+call-lifecycle	Retained active call identity	MQTT reconnects during an active call	host.mqtt,host.call-session
+call-lifecycle	Media-state compatibility	Ringing does not depend on outgoing SIP	host.call-flow,host.sip-media,contract.runtime
+call-lifecycle	Media-state compatibility	SIP media is established	host.call-flow,host.sip-sdp,host.sip-calling,host.sip-media
+call-lifecycle	Observer-only integration	Publishing observability has no hardware side effect	host.call-session,host.intercom
+call-lifecycle	Physical and simulated source attribution	Developer simulation follows the production ring path	host.call-flow,contract.runtime
+call-lifecycle	Physical handset answer terminates remote ringing	The physical handset wins the call race	host.call-flow,host.sip-media,contract.runtime,device.media
+call-lifecycle	Direct incoming SIP is correlated	Direct SIP call lifecycle	host.call-flow,host.call-session,host.sip-calling
+call-lifecycle	Deterministic call-flow regression matrix	Required host E2E flows	host.call-flow
+configuration	Defaults-first loading	A key is omitted	host.config
+configuration	Defaults-first loading	The config file is missing	host.config
+configuration	Packaged default parity	Default configuration is verified	host.config,contract.image
+configuration	Safe production defaults	A fresh installation boots	host.config,contract.runtime
+configuration	Runtime MQTT overrides	A retained bitrate is replayed	host.mqtt,host.runtime-config
+configuration	Runtime ranges	A runtime value is out of range	host.runtime-config
+configuration	Configuration parsing compatibility	A legacy config is reused	host.config
+configuration	Secret logging safety	Configuration is printed	host.config
+developer-controls	Developer mode gate	The daemon restarts	host.mqtt,host.app-watchdog
+developer-controls	Simulated DING parity	A simulated ring is triggered	host.call-flow,host.mqtt,host.sip-media,contract.runtime
+developer-controls	Simulated handset answer	Simulated handset wins a ringing call	host.call-flow,host.mqtt,host.sip-media,contract.runtime
+developer-controls	Local control FIFO	A UART frame is injected locally	host.uart,contract.runtime
+developer-controls	Bounded media diagnostics	A five-second video test runs	host.video-worker,contract.runtime
+developer-controls	Simulations do not flash firmware	A simulation completes	host.call-flow,contract.runtime
+firmware-updates	Release update discovery	A newer release exists	host.firmware-updater,contract.runtime
+firmware-updates	HTTPS and checksum download	Download checksum differs	host.firmware-updater
+firmware-updates	Character-device MTD flash	Image exceeds the safe limit	host.firmware-updater,contract.image
+firmware-updates	Mandatory read-back verification	MTD does not implement fsync	host.firmware-updater
+firmware-updates	Mandatory read-back verification	Read-back checksum differs	host.firmware-updater
+firmware-updates	OTA critical guard	Preparation fails before flash	host.firmware-updater,host.app-watchdog
+firmware-updates	OTA critical guard	Failure occurs after erase begins	host.firmware-updater,host.app-watchdog
+firmware-updates	Successful reboot and duplicate protection	Install is pressed twice	host.firmware-updater,host.mqtt,device.ota
+firmware-updates	Operator modes	Local image lacks expected MD5	host.firmware-updater
+installation-recovery	Factory backup before first flash	A stock device is prepared	device.install
+installation-recovery	Persistent WiFi before first flash	WiFi config is absent	device.install
+installation-recovery	Version-aware shell access	Stock B013 is installed	device.install
+installation-recovery	Verified first image transfer	Network first install	contract.image,device.install
+installation-recovery	Partition-size safety	An image is too large	host.firmware-updater,contract.image,device.install
+installation-recovery	Least-invasive recovery order	Custom firmware still has SSH	device.install
+installation-recovery	Least-invasive recovery order	Linux does not provide a shell	device.install
+installation-recovery	Post-recovery checks	Recovery boot completes	device.install,device.core
+intercom-uart	Serial ownership	Serial listener starts	contract.runtime,device.core
+intercom-uart	Supported outgoing commands	A command is sent	host.intercom
+intercom-uart	Raw and decoded input events	An unknown frame arrives	host.uart,host.prometheus,host.mqtt,host.sip-media
+intercom-uart	Call-related frame handling	Physical handset is answered	host.uart,host.call-flow,host.sip-media,contract.runtime
+intercom-uart	Non-call telemetry	The physical forward button changes	host.uart,host.mqtt,device.media
+intercom-uart	Reopen guard	A guarded reopen is requested	host.call-flow,contract.runtime,device.media
+mqtt-home-assistant	Native MQTT client	MQTT is enabled	host.mqtt
+mqtt-home-assistant	Stable topic identity	Identity overrides are empty	host.mqtt,host.config
+mqtt-home-assistant	Home Assistant discovery coverage	Discovery is published	host.mqtt
+mqtt-home-assistant	Retained state and edge events	Home Assistant restarts	host.mqtt
+mqtt-home-assistant	Action replay protection	The daemon reconnects after an old button press	host.mqtt
+mqtt-home-assistant	Retained runtime configuration	Outgoing SIP is disabled	host.mqtt,host.runtime-config
+mqtt-home-assistant	Dynamic command availability	A snapshot begins	host.mqtt,host.snapshot-file
+mqtt-home-assistant	Reconnect continuity	Broker reconnects during a call	host.mqtt,host.call-session
+mqtt-home-assistant	Legacy retained cleanup	Firmware upgrades from a legacy release	host.mqtt
+network-services	Administrative SSH	Custom firmware boots normally	contract.runtime,device.network
+network-services	SIP and RTP endpoints	Video is disabled	host.sip-sdp,host.call-flow,device.network
+network-services	RTSP endpoint	RTSP credentials are configured	host.rtsp,device.network
+network-services	Prometheus endpoint	Monitoring is disabled	host.prometheus,host.config,device.network
+network-services	Outbound MQTT	MQTT is disabled	host.mqtt,host.config,device.network
+network-services	Trusted-network exposure policy	Remote access is required	contract.runtime,device.network
+observability	Prometheus health and metrics	A monitoring system scrapes the device	host.prometheus
+observability	Runtime metric families	An unknown UART frame arrives	host.prometheus,host.uart
+observability	Release metadata	A release image boots	host.prometheus,contract.image,device.core
+observability	Stateless event telemetry	A physical ring begins	host.mqtt,host.call-flow
+observability	RAM-backed runtime logs	The WiBox reboots	contract.runtime,device.core
+observability	Bounded daemon logging	Daemon log grows beyond its limit	host.app-watchdog
+rtsp-streaming	Optional listener	RTSP is enabled at runtime	host.rtsp,host.mqtt
+rtsp-streaming	Track advertisement follows global video	Video is disabled while RTSP remains enabled	host.rtsp
+rtsp-streaming	Shared media ownership	SIP attaches to active RTSP video	host.rtsp,host.call-flow,contract.runtime
+rtsp-streaming	Idle listener does not open panel	RTSP connects while idle	host.rtsp,contract.runtime
+rtsp-streaming	Client startup recovery	A new client enters PLAY	host.rtsp,host.h264
+rtsp-streaming	Optional Basic authentication	Authentication is not configured	host.rtsp
+runtime-resilience	Application supervision	The daemon crashes	host.app-watchdog
+runtime-resilience	Distinct log-rotation helper	Processes are inspected	host.app-watchdog,contract.runtime
+runtime-resilience	OTA-aware supervision	Updater dies before flash	host.app-watchdog,host.firmware-updater
+runtime-resilience	Stoppable production hardware watchdog	Watchdog device is absent	host.hardware-watchdog,contract.runtime
+runtime-resilience	Main-loop health feeding	The main loop deadlocks	host.hardware-watchdog
+runtime-resilience	Watchdog configuration safety	Unsafe timing is configured	host.hardware-watchdog,host.config
+runtime-resilience	Clean disarm	The daemon exits cleanly	host.hardware-watchdog
+runtime-resilience	One-shot safe reboot	Reboot is pressed repeatedly	host.mqtt,contract.runtime
+sip-calling	Configurable outgoing calls	Outgoing SIP is enabled	host.call-flow,host.config,host.mqtt,host.sip-calling,host.sip-media
+sip-calling	Configurable outgoing calls	Outgoing SIP is disabled	host.call-flow,host.config,host.mqtt,host.sip-calling,host.sip-media
+sip-calling	Direct incoming SIP	A LAN client calls the WiBox	host.call-flow,host.sip-sdp,host.sip-calling,host.sip-media
+sip-calling	SDP media contract	Audio-only installation answers	host.sip-sdp,host.sip-calling,host.call-flow
+sip-calling	Established panel context	Outgoing call is answered	host.call-flow,host.intercom,host.sip-calling,host.sip-media,contract.runtime
+sip-calling	Termination handling	Remote SIP hangs up while RTSP remains	host.call-flow,host.rtsp,host.sip-calling,host.sip-media,contract.runtime
+sip-calling	Generic outgoing timeout	No one answers	host.call-flow,host.runtime-config,host.sip-calling
+sip-calling	Trusted-LAN signaling	Internet calling is required	contract.runtime,device.network
+snapshots	Video capability prerequisite	Snapshot is requested with video disabled	host.mqtt,host.sip-media,contract.runtime
+snapshots	Manual cold snapshot	User takes an idle snapshot	host.video-worker,host.snapshot-file,contract.runtime
+snapshots	Physical-ring snapshot	Visitor presses the physical portal	host.call-flow,host.snapshot-file,contract.runtime,device.media
+snapshots	Developer-ring snapshot	Developer DING captures an image	host.call-flow,host.snapshot-file,contract.runtime
+snapshots	Concurrent snapshot stream	Snapshot is taken during RTSP video	host.video-worker,host.snapshot-file,host.rtsp,device.media
+snapshots	Settled JPEG publication	Initial encoder frames are incomplete	host.snapshot-file,contract.runtime,device.media
+snapshots	Single capture at a time	A second request arrives during capture	host.mqtt,contract.runtime
+video-media	Global video capability	Fresh installation starts	host.config,host.call-flow
+video-media	Proven D1 main stream	Main encoder emits multiple stream IDs	host.video-worker,contract.runtime,device.media
+video-media	One video worker with dynamic sinks	Last video consumer leaves	host.video-worker,host.rtsp,contract.runtime
+video-media	Sofia boot warmup dependency	A later call starts video	contract.runtime,device.media
+video-media	H.264 packet startup	First encoder buffer contains SPS, PPS and IDR	host.h264,host.rtsp,device.media
+video-media	Conservative encoder defaults	A new client attaches with periodic IDR disabled	host.config,host.runtime-config,host.video-worker
+video-media	Real panel image dependency	Encoder runs while panel is closed	device.media
+video-media	Flash-safe optional recording	Recording is enabled for diagnosis	host.config,host.runtime-config,contract.runtime,device.media

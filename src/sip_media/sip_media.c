@@ -30,15 +30,15 @@
 #include "video_worker.h"    // In-daemon D1 H.264 RTP worker
 #include "rtsp_stream.h"     // Optional RTSP camera stream
 #include "hardware_watchdog.h" // Main-loop-aware hardware watchdog
+#include "call_session.h"    // Correlated call lifecycle telemetry
+#include "runtime_config.h"  // Runtime value validation and normalization
+#include "uart_protocol.h"   // Fermax UART frame definitions and parsing
 
 #define THIS_FILE "wibox-media-daemon"
 #define CONFIG_FILE "/mnt/mtd/sip_media.conf"
 #define LEGACY_CONFIG_FILE "/mnt/mtd/sip.conf"
 #define SNAPSHOT_PATH "/tmp/wibox-snapshot.jpg"
 #define SNAPSHOT_LOG_PATH "/tmp/wibox-snapshot-worker.log"
-#define RING_SNAPSHOT_DELAY_MIN_MS 0
-#define RING_SNAPSHOT_DELAY_MAX_MS 5000
-#define RING_SNAPSHOT_DELAY_STEP_MS 500
 #define AUDIO_LINE_MUTE_MAX_MS 3000
 
 #define RTP_PAYLOAD_DTMF 101    // Common DTMF payload type
@@ -86,6 +86,8 @@ static pthread_mutex_t intercom_reopen_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static long long intercom_last_close_ms = 0;
 static char intercom_last_close_reason[64] = "none";
 static char local_ip_addr[64] = "0.0.0.0";
+static call_session_t current_call_session;
+static int call_session_ready = 0;
 
 typedef struct {
     int open_panel_context;
@@ -107,6 +109,72 @@ static unsigned long long now_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return ((unsigned long long)tv.tv_sec * 1000ULL) + ((unsigned long long)tv.tv_usec / 1000ULL);
+}
+
+static uint32_t create_call_boot_nonce(void) {
+    uint32_t nonce = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+
+    if (fd >= 0) {
+        if (read(fd, &nonce, sizeof(nonce)) != (ssize_t)sizeof(nonce)) {
+            nonce = 0;
+        }
+        close(fd);
+    }
+    if (nonce == 0) {
+        nonce = (uint32_t)time(NULL) ^ (uint32_t)getpid() ^ (uint32_t)now_ms();
+    }
+    return nonce ? nonce : 1;
+}
+
+static void publish_call_trace_event(const call_session_event_t* event,
+                                     int new_session) {
+    if (!event) {
+        return;
+    }
+    if (new_session) {
+        mqtt_publish_call_id(event->call_id);
+    }
+    mqtt_publish_call_event(event);
+    PJ_LOG(3,(THIS_FILE,
+              "Call trace id=%s seq=%u event=%s source=%s route=%s state=%s reason=%s terminal=%d",
+              event->call_id, event->sequence, event->event_type,
+              event->source, event->route, event->media_state,
+              event->reason, event->terminal));
+    if (event->terminal) {
+        mqtt_publish_call_id(NULL);
+    }
+}
+
+static int call_trace_start(const char* source, const char* event_type,
+                            const char* media_state, const char* route,
+                            const char* reason) {
+    call_session_event_t event;
+    int rc;
+
+    if (!call_session_ready) {
+        return -1;
+    }
+    rc = call_session_start(&current_call_session, source, event_type,
+                            media_state, route, reason, time(NULL), &event);
+    if (rc > 0) {
+        publish_call_trace_event(&event, 1);
+    }
+    return rc;
+}
+
+static void call_trace_record(const char* event_type, const char* media_state,
+                              const char* route, const char* reason,
+                              int terminal) {
+    call_session_event_t event;
+
+    if (!call_session_ready) {
+        return;
+    }
+    if (call_session_record(&current_call_session, event_type, media_state,
+                            route, reason, terminal, time(NULL), &event) > 0) {
+        publish_call_trace_event(&event, 0);
+    }
 }
 
 static void mute_audio_input_for_ms(int duration_ms, const char* reason)
@@ -170,7 +238,6 @@ static time_t last_dtmf_time = 0;
 static pj_bool_t on_rx_request(pjsip_rx_data *rdata);
 static pj_bool_t on_rx_response(pjsip_rx_data *rdata);
 static void signal_handler(int sig);
-static void* audio_handler(void* arg);
 static int setup_rtp_socket(void);
 static void start_audio_session(const char* remote_ip, int remote_port);
 static void stop_audio_session(void);
@@ -240,7 +307,6 @@ static int start_snapshot_capture(int open_panel_context, unsigned int delay_ms,
                                   const char* reason, int start_rtsp_after);
 static void* snapshot_thread_func(void* arg);
 static void publish_snapshot_button_availability(void);
-static int clamp_recording_max_seconds(int seconds);
 static void mqtt_set_video_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_video_bitrate_callback(int bitrate_kbps, void* user_data);
 static void mqtt_set_sip_outgoing_call_enabled_callback(int enabled, void* user_data);
@@ -249,8 +315,6 @@ static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* u
 static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data);
-static int clamp_ring_snapshot_delay(int delay_ms);
-static int normalize_sip_target_uri(const char* input, char* out, size_t out_size);
 static void invalidate_ringing_timeout(const char* reason);
 static void schedule_ringing_timeout(int timeout_seconds);
 static void* ringing_timeout_thread_func(void* arg);
@@ -463,7 +527,6 @@ static void refresh_local_ip(void) {
     get_local_ip(new_local_ip, sizeof(new_local_ip));
 
     // Check if IP changed (simple string comparison)
-    sip_call_config_t call_config;
     const sip_call_session_t* session = sip_calling_get_session();
     if (session) {
         // We don't have direct access to the stored local_ip in sip_calling module
@@ -686,6 +749,7 @@ static pj_bool_t parse_rtp_dtmf_event(unsigned char* rtp_packet, ssize_t packet_
 
 // Unified SIP calling callback implementations
 static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t new_state, void* user_data) {
+    (void)user_data;
     // Handle call establishment (both incoming and outgoing)
     if (new_state == SIP_CALL_STATE_ESTABLISHED && old_state != SIP_CALL_STATE_ESTABLISHED) {
         invalidate_ringing_timeout("sip-established");
@@ -703,6 +767,11 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         mqtt_publish_sip_call_active(1);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("established");
+        if (call_trace_start("sip_incoming", "established", "established",
+                             "sip", "sip-established") == 0) {
+            call_trace_record("established", "established", "sip",
+                              "sip-established", 0);
+        }
         prometheus_set_call_active(1);
         prometheus_set_sip_call_active(1);
         prometheus_set_ringing(0);
@@ -725,6 +794,8 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record(new_state == SIP_CALL_STATE_FAILED ? "sip_failed" : "sip_ended",
+                          "idle", "sip", "sip-established-ended", 1);
         prometheus_set_sip_call_active(0);
         prometheus_set_ringing(0);
     }
@@ -744,6 +815,8 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
         mqtt_publish_sip_call_active(0);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record(new_state == SIP_CALL_STATE_FAILED ? "sip_failed" : "sip_cancelled",
+                          "idle", "sip", "sip-non-established-ended", 1);
         prometheus_set_sip_call_active(0);
         prometheus_set_ringing(0);
     }
@@ -751,6 +824,7 @@ static void on_call_state_change(sip_call_state_t old_state, sip_call_state_t ne
 
 static void on_audio_ready(const char* remote_ip, int remote_rtp_port,
                            int remote_video_rtp_port, void* user_data) {
+    (void)user_data;
     PJ_LOG(3,(THIS_FILE, "Media ready: audio=%s:%d video=%s:%d",
               remote_ip, remote_rtp_port, remote_ip, remote_video_rtp_port));
 
@@ -1225,6 +1299,7 @@ static void unlock_door(const char* source) {
     if (intercom_send_command(INTERCOM_CMD_UNLOCK_DOOR) == 0) {
         printf("Door unlock command sent successfully\n");
         mqtt_publish_door_unlocked_pulse();
+        call_trace_record("door_opened", NULL, NULL, source, 0);
         prometheus_inc_door_unlock();
     } else {
         printf("Failed to send door unlock command\n");
@@ -1653,41 +1728,6 @@ static void mqtt_set_video_enabled_callback(int enabled, void* user_data) {
     }
 }
 
-static int clamp_video_bitrate(int bitrate_kbps) {
-    int rounded;
-    if (bitrate_kbps < 512) return 512;
-    if (bitrate_kbps > 4096) return 4096;
-    rounded = ((bitrate_kbps + 128) / 256) * 256;
-    if (rounded < 512) return 512;
-    if (rounded > 4096) return 4096;
-    return rounded;
-}
-
-static int clamp_video_gop_n(int gop_n) {
-    if (gop_n <= 0) return 25;
-    if (gop_n < 5) return 5;
-    if (gop_n > 120) return 120;
-    return gop_n;
-}
-
-static int clamp_video_idr_interval(int idr_interval) {
-    if (idr_interval <= 0) return 1;
-    if (idr_interval > 10) return 10;
-    return idr_interval;
-}
-
-static int clamp_video_brc_mode(int brc_mode) {
-    if (brc_mode < 0 || brc_mode > 3) return 0;
-    return brc_mode;
-}
-
-static int clamp_video_rtsp_periodic_idr_ms(int interval_ms) {
-    if (interval_ms <= 0) return 0;
-    if (interval_ms < 500) return 500;
-    if (interval_ms > 10000) return 10000;
-    return interval_ms;
-}
-
 static void populate_video_encoder_tuning(video_encoder_tuning_t* tuning) {
     if (!tuning) {
         return;
@@ -1698,68 +1738,6 @@ static void populate_video_encoder_tuning(video_encoder_tuning_t* tuning) {
     tuning->brc_mode = clamp_video_brc_mode(app_config.video_brc_mode);
     tuning->rtsp_periodic_idr_ms =
         clamp_video_rtsp_periodic_idr_ms(app_config.video_rtsp_periodic_idr_ms);
-}
-
-static int clamp_outgoing_call_timeout(int timeout_seconds) {
-    int rounded;
-    if (timeout_seconds < 10) return 10;
-    if (timeout_seconds > 120) return 120;
-    rounded = ((timeout_seconds + 2) / 5) * 5;
-    if (rounded < 10) return 10;
-    if (rounded > 120) return 120;
-    return rounded;
-}
-
-static int clamp_ring_snapshot_delay(int delay_ms) {
-    int rounded;
-    if (delay_ms < RING_SNAPSHOT_DELAY_MIN_MS) return RING_SNAPSHOT_DELAY_MIN_MS;
-    if (delay_ms > RING_SNAPSHOT_DELAY_MAX_MS) return RING_SNAPSHOT_DELAY_MAX_MS;
-    rounded = ((delay_ms + (RING_SNAPSHOT_DELAY_STEP_MS / 2)) /
-               RING_SNAPSHOT_DELAY_STEP_MS) * RING_SNAPSHOT_DELAY_STEP_MS;
-    if (rounded < RING_SNAPSHOT_DELAY_MIN_MS) return RING_SNAPSHOT_DELAY_MIN_MS;
-    if (rounded > RING_SNAPSHOT_DELAY_MAX_MS) return RING_SNAPSHOT_DELAY_MAX_MS;
-    return rounded;
-}
-
-static int clamp_recording_max_seconds(int seconds) {
-    if (seconds <= 0) return 30;
-    if (seconds > 30) return 30;
-    return seconds;
-}
-
-static int normalize_sip_target_uri(const char* input, char* out, size_t out_size) {
-    const char* start;
-    const char* end;
-    size_t len;
-    size_t i;
-
-    if (!input || !out || out_size == 0) {
-        return -1;
-    }
-
-    start = input;
-    while (*start && isspace((unsigned char)*start)) {
-        start++;
-    }
-    end = start + strlen(start);
-    while (end > start && isspace((unsigned char)*(end - 1))) {
-        end--;
-    }
-
-    len = (size_t)(end - start);
-    if (len == 0 || len >= out_size || len < 5 || strncmp(start, "sip:", 4) != 0) {
-        return -1;
-    }
-    for (i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)start[i];
-        if (iscntrl(c) || isspace(c)) {
-            return -1;
-        }
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 0;
 }
 
 static void* ringing_timeout_thread_func(void* arg) {
@@ -1798,6 +1776,7 @@ static void* ringing_timeout_thread_func(void* arg) {
     }
     mqtt_publish_ringing(0);
     mqtt_publish_media_state("idle");
+    call_trace_record("timeout", "idle", "none", "ring-timeout", 1);
     prometheus_set_ringing(0);
     return NULL;
 }
@@ -2014,97 +1993,57 @@ static void handle_simulated_ding_trigger(void) {
         simulated_ding_panel_context_active = 1;
     }
 
-    handle_ding_trigger("serial alarm");
+    handle_ding_trigger("developer_simulation");
 }
 
 static void handle_ding_trigger(const char* source) {
     pj_status_t status;
-    int is_serial_alarm = source && strcmp(source, "serial alarm") == 0;
+    int trace_started;
+    int is_panel_alarm = source &&
+        (strcmp(source, "physical_panel") == 0 ||
+         strcmp(source, "developer_simulation") == 0);
 
     PJ_LOG(3,(THIS_FILE, "DING detected from %s - checking if we can make outgoing call",
               source ? source : "unknown"));
 
     if (sip_calling_is_call_active()) {
         PJ_LOG(2,(THIS_FILE, "DING ignored - call already active"));
+        call_trace_record("ring_ignored", NULL, NULL, "sip-call-active", 0);
         return;
     }
 
     mqtt_publish_ringing(1);
     mqtt_publish_media_state("ringing");
+    trace_started = call_trace_start(source, "ringing", "ringing", "none",
+                                     is_panel_alarm ? "alarm-report" : "ding");
+    if (trace_started == 0) {
+        call_trace_record("ring_repeated", "ringing", NULL,
+                          source ? source : "unknown", 0);
+    }
     prometheus_set_ringing(1);
     prometheus_inc_ring();
     schedule_ringing_timeout(app_config.outgoing_call_timeout);
 
-    if (is_serial_alarm) {
+    if (is_panel_alarm) {
         start_snapshot_capture(0, (unsigned int)app_config.ring_snapshot_delay_ms, "ring", 1);
     }
 
     if (!app_config.sip_outgoing_call_enabled) {
         PJ_LOG(3,(THIS_FILE, "Outgoing SIP call disabled - keeping media_state=ringing only"));
+        call_trace_record("sip_disabled", "ringing", "none", "outgoing-disabled", 0);
         return;
     }
 
     PJ_LOG(3,(THIS_FILE, "Making outgoing call due to %s", source ? source : "DING"));
+    call_trace_record("sip_calling", "ringing", "sip", "outgoing-call", 0);
     status = sip_calling_make_call();
     if (status != PJ_SUCCESS) {
         PJ_LOG(1,(THIS_FILE, "Failed to make outgoing call: %d", status));
+        call_trace_record("sip_call_failed", "ringing", "sip", "make-call-failed", 0);
         if (simulated_ding_panel_context_active) {
             close_intercom_call("simulated-ding-call-failed");
         }
     }
-}
-
-static int hex_nibble(char c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
-
-static int parse_uart_control_frame(const char* input, unsigned char frame[4]) {
-    const char* p = input;
-    int count = 0;
-
-    if (strncmp(p, "UART", 4) != 0) {
-        return -1;
-    }
-    p += 4;
-
-    while (*p && count < 4) {
-        int hi;
-        int lo;
-
-        while (*p && (isspace((unsigned char)*p) || *p == ':' || *p == '-')) {
-            p++;
-        }
-        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-            p += 2;
-        }
-        if (p[0] == '\\' && (p[1] == 'x' || p[1] == 'X')) {
-            p += 2;
-        }
-
-        hi = hex_nibble(p[0]);
-        lo = hex_nibble(p[1]);
-        if (hi < 0 || lo < 0) {
-            return -1;
-        }
-
-        frame[count++] = (unsigned char)((hi << 4) | lo);
-        p += 2;
-    }
-
-    while (*p && isspace((unsigned char)*p)) {
-        p++;
-    }
-
-    return (count == 4 && *p == '\0') ? 0 : -1;
 }
 
 static void handle_control_message(const char* message) {
@@ -2125,7 +2064,7 @@ static void handle_control_message(const char* message) {
         return;
     }
 
-    if (parse_uart_control_frame(message, frame) == 0) {
+    if (uart_protocol_parse_control_frame(message, frame) == 0) {
         PJ_LOG(3,(THIS_FILE, "Injecting UART frame from control pipe: %02X %02X %02X %02X",
                   frame[0], frame[1], frame[2], frame[3]));
         handle_uart_frame(frame);
@@ -2137,6 +2076,7 @@ static void handle_control_message(const char* message) {
 
 // DING monitoring thread
 static void* ding_monitor_thread_func(void* arg) {
+    (void)arg;
     char buffer[64];
     ssize_t bytes_read;
 
@@ -2245,58 +2185,6 @@ static void stop_ding_monitoring(void) {
     PJ_LOG(3,(THIS_FILE, "DING monitoring stopped"));
 }
 
-typedef enum {
-    UART_CODE_UNKNOWN = 0,
-    UART_CODE_ALARM_REPORT,
-    UART_CODE_CMD_RESET,
-    UART_CODE_START_CALL,
-    UART_CODE_HANG_UP_0,
-    UART_CODE_HANG_UP_1,
-    UART_CODE_PHYSICAL_HANDSET_ANSWERED,
-    UART_CODE_PUSH_STATE_0,
-    UART_CODE_PUSH_STATE_1,
-    UART_CODE_MCU_STATE_0,
-    UART_CODE_MCU_STATE_1,
-    UART_CODE_CMD_DOWN_LONG_1,
-    UART_CODE_CMD_DOWN_LONG_2
-} uart_code_t;
-
-typedef struct {
-    uart_code_t code;
-    const char* name;
-    const char* event_type;
-    unsigned char bytes[4];
-} uart_code_def_t;
-
-static const uart_code_def_t uart_codes[] = {
-    {UART_CODE_ALARM_REPORT,    "ALARM_REPORT",    "alarm_report",    {0xFB, 0x11, 0x00, 0x1C}},
-    {UART_CODE_CMD_RESET,       "CMD_RESET",       "cmd_reset",       {0xFB, 0x20, 0x00, 0x2B}},
-    {UART_CODE_START_CALL,      "START_CALL",      "start_call",      {0xFB, 0x14, 0x01, 0x20}},
-    {UART_CODE_HANG_UP_0,       "HANG_UP_0",       "hang_up_0",       {0xFB, 0x13, 0x00, 0x1E}},
-    {UART_CODE_HANG_UP_1,       "HANG_UP_1",       "hang_up_1",       {0xFB, 0x13, 0x01, 0x1F}},
-    {UART_CODE_PHYSICAL_HANDSET_ANSWERED,
-     "PHYSICAL_HANDSET_ANSWERED",
-     "physical_handset_answered",
-     {0xFB, 0x23, 0x00, 0x2E}},
-    {UART_CODE_PUSH_STATE_0,    "PUSH_STATE_0",    "push_state_0",    {0xFB, 0x19, 0x00, 0x24}},
-    {UART_CODE_PUSH_STATE_1,    "PUSH_STATE_1",    "push_state_1",    {0xFB, 0x19, 0x01, 0x25}},
-    {UART_CODE_MCU_STATE_0,     "MCU_STATE_0",     "mcu_state_0",     {0xFB, 0x16, 0x00, 0x21}},
-    {UART_CODE_MCU_STATE_1,     "MCU_STATE_1",     "mcu_state_1",     {0xFB, 0x16, 0x01, 0x22}},
-    {UART_CODE_CMD_DOWN_LONG_1, "CMD_DOWN_LONG_1", "cmd_down_long_1", {0xFB, 0x24, 0x01, 0x30}},
-    {UART_CODE_CMD_DOWN_LONG_2, "CMD_DOWN_LONG_2", "cmd_down_long_2", {0xFB, 0x24, 0x02, 0x31}}
-};
-
-static const uart_code_def_t* find_uart_code(const unsigned char frame[4]) {
-    size_t i;
-
-    for (i = 0; i < sizeof(uart_codes) / sizeof(uart_codes[0]); i++) {
-        if (memcmp(frame, uart_codes[i].bytes, 4) == 0) {
-            return &uart_codes[i];
-        }
-    }
-    return NULL;
-}
-
 static void report_alarm_event(int event_id) {
     FILE* fp = fopen("/mnt/mtd/alarm.log", "a");
 
@@ -2317,31 +2205,8 @@ static void terminate_call_from_serial(const char* reason) {
     sip_calling_terminate_call();
 }
 
-static void format_uart_bytes(const unsigned char* data, size_t len, char* out, size_t out_size) {
-    static const char hex[] = "0123456789ABCDEF";
-    size_t i;
-    size_t pos = 0;
-
-    if (!out || out_size == 0) {
-        return;
-    }
-    out[0] = '\0';
-    if (!data) {
-        return;
-    }
-
-    for (i = 0; i < len && pos + 4 < out_size; i++) {
-        if (i > 0) {
-            out[pos++] = ' ';
-        }
-        out[pos++] = hex[(data[i] >> 4) & 0x0f];
-        out[pos++] = hex[data[i] & 0x0f];
-    }
-    out[pos] = '\0';
-}
-
 static void handle_uart_frame(const unsigned char frame[4]) {
-    const uart_code_def_t* def = find_uart_code(frame);
+    const uart_code_def_t* def = uart_protocol_find(frame);
 
     if (!def) {
         prometheus_inc_uart_unknown_frame();
@@ -2360,7 +2225,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_ALARM_REPORT:
         prometheus_inc_uart_alarm_report();
         report_alarm_event(1);
-        handle_ding_trigger("serial alarm");
+        handle_ding_trigger("physical_panel");
         break;
     case UART_CODE_HANG_UP_0:
     case UART_CODE_HANG_UP_1:
@@ -2371,6 +2236,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record(def->event_type, "idle", NULL, def->name, 1);
         prometheus_set_ringing(0);
         terminate_call_from_serial(def->name);
         break;
@@ -2382,6 +2248,8 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         clear_intercom_call_state(def->name);
         mqtt_publish_ringing(0);
         mqtt_publish_media_state("idle");
+        call_trace_record("physical_handset_answered", "idle",
+                          "physical_handset", def->name, 1);
         prometheus_set_ringing(0);
         terminate_call_from_serial(def->name);
         break;
@@ -2416,6 +2284,7 @@ static void handle_uart_frame(const unsigned char frame[4]) {
 }
 
 static void* serial_monitor_thread_func(void* arg) {
+    (void)arg;
     unsigned char frame[4];
     size_t frame_len = 0;
     pj_thread_desc desc = {0};
@@ -2457,7 +2326,7 @@ static void* serial_monitor_thread_func(void* arg) {
         n = read(serial_fd, buffer, sizeof(buffer));
         if (n > 0) {
             char raw_hex[128];
-            format_uart_bytes(buffer, (size_t)n, raw_hex, sizeof(raw_hex));
+            uart_protocol_format_bytes(buffer, (size_t)n, raw_hex, sizeof(raw_hex));
             PJ_LOG(3,(THIS_FILE, "UART raw read %zd bytes: %s", n, raw_hex));
             mqtt_publish_uart_event("raw_read", "RAW_READ", buffer, (size_t)n, -1, 0);
             for (i = 0; i < n; i++) {
@@ -2615,6 +2484,7 @@ static int setup_rtp_socket(void) {
 
 // Separate AI thread (microphone to network)
 static void* audio_input_handler(void* arg) {
+    (void)arg;
     unsigned char *audio_buffer;
     unsigned char *rtp_packet;
     ssize_t bytes_read;
@@ -2729,6 +2599,7 @@ static void* audio_input_handler(void* arg) {
 
 // Separate AO thread (network to speaker)
 static void* audio_output_handler(void* arg) {
+    (void)arg;
     unsigned char *rtp_packet;
     ssize_t bytes_read;
     int logged_packets = 0;
@@ -3066,6 +2937,12 @@ int main(int argc, char *argv[]) {
     // Print loaded configuration
     config_print(&app_config);
 
+    if (call_session_init(&current_call_session, create_call_boot_nonce()) == 0) {
+        call_session_ready = 1;
+    } else {
+        printf("Warning: Failed to initialize call trace; calls remain operational\n");
+    }
+
     // Get and display local IP
     get_local_ip(local_ip, sizeof(local_ip));
     strncpy(local_ip_addr, local_ip, sizeof(local_ip_addr) - 1);
@@ -3251,6 +3128,10 @@ int main(int argc, char *argv[]) {
     prometheus_stop();
     stop_serial_monitoring();
     stop_ding_monitoring();
+    if (call_session_ready) {
+        call_session_destroy(&current_call_session);
+        call_session_ready = 0;
+    }
 
     // Terminate any active call
     sip_calling_terminate_call();

@@ -125,7 +125,9 @@ if grep -q '^goke_wdt ' /proc/modules 2>/dev/null; then
   /sbin/rmmod goke_wdt || echo "WARNING: unable to unload warmup watchdog"
 fi
 if ! grep -q '^goke_wdt ' /proc/modules 2>/dev/null; then
-  if /sbin/insmod "${WATCHDOG_MODULE}" init_mode=2 soft_noboot=0 nowayout=0 tmr_atboot=0 tmr_margin=30; then
+  # The module metadata reverses these labels on this GK7102S build:
+  # init_mode=2 only raises an IRQ, while init_mode=4 performs a hardware reset.
+  if /sbin/insmod "${WATCHDOG_MODULE}" init_mode=4 soft_noboot=0 nowayout=0 tmr_atboot=0 tmr_margin=30; then
     sleep 1
     /sbin/mdev -s
   else

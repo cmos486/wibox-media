@@ -329,6 +329,8 @@ State topics:
 
 ```text
 wibox/<hostname>/media/state
+wibox/<hostname>/call/id
+wibox/<hostname>/call/event
 wibox/<hostname>/door/unlocked
 wibox/<hostname>/snapshot/image
 wibox/<hostname>/snapshot/take/availability
@@ -354,6 +356,39 @@ idle
 ringing
 established
 ```
+
+Every call flow has one `call_id`. The retained `call/id` sensor contains the
+active identifier and returns to `none` after a terminal event. Repeated rings
+while the same flow is active reuse the identifier. A new flow always gets a
+new identifier, including after a daemon reboot.
+
+`call/event` is a stateless, non-retained JSON event discovered in Home
+Assistant as `event.wibox_call_event`. It correlates physical panel rings,
+developer simulations, SIP progress, physical handset answers, UART hangups,
+door unlocks and timeouts without adding values to `media/state`.
+
+Example:
+
+```json
+{
+  "event_type": "physical_handset_answered",
+  "call_id": "1a2b3c4d-00000001",
+  "sequence": 3,
+  "source": "physical_panel",
+  "route": "physical_handset",
+  "media_state": "idle",
+  "reason": "PHYSICAL_HANDSET_ANSWERED",
+  "terminal": true,
+  "started_at": 1784000000,
+  "ts": 1784000004
+}
+```
+
+The host E2E matrix runs in GitHub Actions and covers answered SIP, disabled
+outgoing SIP, immediate SIP failure, timeout, physical handset answer,
+developer simulation, repeated ring, UART hangup and direct incoming SIP. The
+MQTT integration test separately verifies discovery, retained `call/id` state
+and non-retained structured events.
 
 `door/unlocked` is a short pulse: `ON` then `OFF`.
 

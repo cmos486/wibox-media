@@ -31,11 +31,21 @@
 #define DEFAULT_CONF_FALLBACK "/etc/sip_media.conf.default"
 #define DEFAULT_UPDATE_FILE "/tmp/update.img"
 #define DEFAULT_RELEASE_LOG "/tmp/firmware_update.log"
+#ifndef FLASH_DEVICE
 #define FLASH_DEVICE "/dev/mtd4"
+#endif
+#ifndef FLASH_VERIFY_DEVICE
 #define FLASH_VERIFY_DEVICE "/dev/mtd4"
+#endif
+#ifndef FLASH_MOUNTPOINT
 #define FLASH_MOUNTPOINT "/usr"
+#endif
+#ifndef FLASH_BLOCK
 #define FLASH_BLOCK 4096
+#endif
+#ifndef MAX_IMAGE_SIZE
 #define MAX_IMAGE_SIZE 11534336
+#endif
 #define MAX_REDIRECTS 5
 #define LEGACY_REPO "aymerici/wibox-media"
 

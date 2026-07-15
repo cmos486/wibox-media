@@ -1,9 +1,11 @@
 #include "sip_calling.h"
+#include "sip_sdp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <unistd.h>
 
 #define THIS_FILE "sip_calling"
 
@@ -24,8 +26,6 @@ static pj_status_t send_bye_request(void);
 static void clear_session_data(void);
 static void store_dialog_info_from_invite(pjsip_rx_data *rdata);
 static void store_dialog_info_from_response(pjsip_rx_data *rdata);
-static int parse_h264_payload_type(const char *sdp_content);
-static int parse_telephone_event_payload_type(const char *sdp_content);
 
 pj_status_t sip_calling_init(const sip_call_config_t* call_config,
                             pjsip_endpoint* endpt,
@@ -186,8 +186,9 @@ static void store_dialog_info_from_invite(pjsip_rx_data *rdata) {
     pjsip_cid_hdr *cid_hdr = (pjsip_cid_hdr*)
         pjsip_msg_find_hdr(rdata->msg_info.msg, PJSIP_H_CALL_ID, NULL);
     if (cid_hdr) {
-        int len = (cid_hdr->id.slen < sizeof(current_session.call_id_buf) - 1) ?
-                  cid_hdr->id.slen : sizeof(current_session.call_id_buf) - 1;
+        size_t source_len = cid_hdr->id.slen > 0 ? (size_t)cid_hdr->id.slen : 0;
+        size_t len = source_len < sizeof(current_session.call_id_buf) - 1 ?
+                     source_len : sizeof(current_session.call_id_buf) - 1;
         memcpy(current_session.call_id_buf, cid_hdr->id.ptr, len);
         current_session.call_id_buf[len] = '\0';
         current_session.call_id.ptr = current_session.call_id_buf;
@@ -200,8 +201,9 @@ static void store_dialog_info_from_invite(pjsip_rx_data *rdata) {
         pjsip_msg_find_hdr(rdata->msg_info.msg, PJSIP_H_FROM, NULL);
     if (from_hdr) {
         if (from_hdr->tag.slen > 0) {
-            int len = (from_hdr->tag.slen < sizeof(current_session.remote_tag_buf) - 1) ?
-                      from_hdr->tag.slen : sizeof(current_session.remote_tag_buf) - 1;
+            size_t source_len = (size_t)from_hdr->tag.slen;
+            size_t len = source_len < sizeof(current_session.remote_tag_buf) - 1 ?
+                         source_len : sizeof(current_session.remote_tag_buf) - 1;
             memcpy(current_session.remote_tag_buf, from_hdr->tag.ptr, len);
             current_session.remote_tag_buf[len] = '\0';
             current_session.remote_tag.ptr = current_session.remote_tag_buf;
@@ -214,8 +216,9 @@ static void store_dialog_info_from_invite(pjsip_rx_data *rdata) {
         int uri_len = pjsip_uri_print(PJSIP_URI_IN_FROMTO_HDR, from_hdr->uri, uri_buf, sizeof(uri_buf));
         if (uri_len > 0) {
             uri_buf[uri_len] = '\0';
-            int len = (uri_len < sizeof(current_session.remote_uri_buf) - 1) ?
-                      uri_len : sizeof(current_session.remote_uri_buf) - 1;
+            size_t source_len = (size_t)uri_len;
+            size_t len = source_len < sizeof(current_session.remote_uri_buf) - 1 ?
+                         source_len : sizeof(current_session.remote_uri_buf) - 1;
             memcpy(current_session.remote_uri_buf, uri_buf, len);
             current_session.remote_uri_buf[len] = '\0';
             current_session.remote_uri.ptr = current_session.remote_uri_buf;
@@ -232,8 +235,9 @@ static void store_dialog_info_from_invite(pjsip_rx_data *rdata) {
         int contact_len = pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR, contact_hdr->uri, contact_buf, sizeof(contact_buf));
         if (contact_len > 0) {
             contact_buf[contact_len] = '\0';
-            int len = (contact_len < sizeof(current_session.remote_contact_buf) - 1) ?
-                      contact_len : sizeof(current_session.remote_contact_buf) - 1;
+            size_t source_len = (size_t)contact_len;
+            size_t len = source_len < sizeof(current_session.remote_contact_buf) - 1 ?
+                         source_len : sizeof(current_session.remote_contact_buf) - 1;
             memcpy(current_session.remote_contact_buf, contact_buf, len);
             current_session.remote_contact_buf[len] = '\0';
             current_session.remote_contact.ptr = current_session.remote_contact_buf;
@@ -251,8 +255,9 @@ static void store_dialog_info_from_response(pjsip_rx_data *rdata) {
     pjsip_to_hdr *to_hdr = (pjsip_to_hdr*)
         pjsip_msg_find_hdr(rdata->msg_info.msg, PJSIP_H_TO, NULL);
     if (to_hdr && to_hdr->tag.slen > 0) {
-        int len = (to_hdr->tag.slen < sizeof(current_session.remote_tag_buf) - 1) ?
-                  to_hdr->tag.slen : sizeof(current_session.remote_tag_buf) - 1;
+        size_t source_len = (size_t)to_hdr->tag.slen;
+        size_t len = source_len < sizeof(current_session.remote_tag_buf) - 1 ?
+                     source_len : sizeof(current_session.remote_tag_buf) - 1;
         memcpy(current_session.remote_tag_buf, to_hdr->tag.ptr, len);
         current_session.remote_tag_buf[len] = '\0';
         current_session.remote_tag.ptr = current_session.remote_tag_buf;
@@ -268,8 +273,9 @@ static void store_dialog_info_from_response(pjsip_rx_data *rdata) {
         int len = pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR, contact_hdr->uri, contact_buf, sizeof(contact_buf));
         if (len > 0) {
             contact_buf[len] = '\0';
-            int buf_len = (len < sizeof(current_session.remote_contact_buf) - 1) ?
-                          len : sizeof(current_session.remote_contact_buf) - 1;
+            size_t source_len = (size_t)len;
+            size_t buf_len = source_len < sizeof(current_session.remote_contact_buf) - 1 ?
+                             source_len : sizeof(current_session.remote_contact_buf) - 1;
             memcpy(current_session.remote_contact_buf, contact_buf, buf_len);
             current_session.remote_contact_buf[buf_len] = '\0';
             current_session.remote_contact.ptr = current_session.remote_contact_buf;
@@ -310,7 +316,6 @@ static pj_status_t send_cancel_request(void) {
 pj_status_t sip_calling_handle_incoming_invite(pjsip_rx_data *rdata) {
     pjsip_tx_data *tdata;
     pj_status_t status;
-    char sdp_body[512];
     pj_str_t sdp_str;
     pjsip_msg_body *body;
     int remote_rtp_port = 8000;
@@ -773,6 +778,8 @@ static pj_status_t send_ack_request(pjsip_rx_data* rdata) {
     pj_str_t target_uri_str;
     char from_uri_buf[128];
 
+    (void)rdata;
+
     snprintf(from_uri_buf, sizeof(from_uri_buf), "sip:caller@%s:%d",
              config.local_ip, config.local_sip_port);
     from_uri_str = pj_str(from_uri_buf);
@@ -926,31 +933,11 @@ pj_status_t sip_calling_create_sdp_offer(pj_pool_t* mem_pool,
                                         int video_payload_type,
                                         pj_str_t* sdp_str) {
     char sdp_body[768];
-    int len;
 
-    len = snprintf(sdp_body, sizeof(sdp_body),
-                   "v=0\r\n"
-                   "o=wibox 123456 654321 IN IP4 %s\r\n"
-                   "s=Wibox Media Session\r\n"
-                   "c=IN IP4 %s\r\n"
-                   "t=0 0\r\n"
-                   "m=audio %d RTP/AVP 8 101\r\n"
-                   "a=rtpmap:8 PCMA/8000\r\n"
-                   "a=rtpmap:101 telephone-event/8000\r\n"
-                   "a=fmtp:101 0-16\r\n"
-                   "a=sendrecv\r\n",
-                   local_ip, local_ip, local_rtp_port);
-
-    if (local_video_rtp_port > 0 && len > 0 && len < (int)sizeof(sdp_body)) {
-        snprintf(sdp_body + len, sizeof(sdp_body) - len,
-                 "m=video %d RTP/AVP %d\r\n"
-                 "a=rtpmap:%d H264/90000\r\n"
-                 "a=fmtp:%d packetization-mode=1;profile-level-id=42e01e\r\n"
-                 "a=sendonly\r\n",
-                 local_video_rtp_port,
-                 video_payload_type,
-                 video_payload_type,
-                 video_payload_type);
+    if (!mem_pool || !sdp_str ||
+        sip_sdp_build(local_ip, local_rtp_port, local_video_rtp_port,
+                      video_payload_type, sdp_body, sizeof(sdp_body)) != 0) {
+        return PJ_EINVAL;
     }
 
     PJ_LOG(3,(THIS_FILE, "Local SDP:\n%s", sdp_body));
@@ -958,127 +945,15 @@ pj_status_t sip_calling_create_sdp_offer(pj_pool_t* mem_pool,
     return PJ_SUCCESS;
 }
 
-static int parse_h264_payload_type(const char *sdp_content) {
-    const char *video = strstr(sdp_content, "m=video ");
-    const char *line;
-
-    if (!video) {
-        return 0;
-    }
-
-    line = video;
-    while (line && *line) {
-        const char *next = strstr(line, "\n");
-        int payload_type = 0;
-        char codec[32];
-
-        if (line != video && strncmp(line, "m=", 2) == 0) {
-            break;
-        }
-        if (sscanf(line, "a=rtpmap:%d %31[^/\r\n]", &payload_type, codec) == 2) {
-            if (strcasecmp(codec, "H264") == 0) {
-                return payload_type;
-            }
-        }
-
-        if (!next) {
-            break;
-        }
-        line = next + 1;
-    }
-
-    return 0;
-}
-
-static int parse_telephone_event_payload_type(const char *sdp_content) {
-    const char *audio = strstr(sdp_content, "m=audio ");
-    const char *line;
-
-    if (!audio) {
-        return 0;
-    }
-
-    line = audio;
-    while (line && *line) {
-        const char *next = strstr(line, "\n");
-        int payload_type = 0;
-        char codec[32];
-
-        if (line != audio && strncmp(line, "m=", 2) == 0) {
-            break;
-        }
-        if (sscanf(line, "a=rtpmap:%d %31[^/\r\n]", &payload_type, codec) == 2) {
-            if (strcasecmp(codec, "telephone-event") == 0) {
-                return payload_type;
-            }
-        }
-
-        if (!next) {
-            break;
-        }
-        line = next + 1;
-    }
-
-    return 0;
-}
-
 pj_status_t sip_calling_parse_sdp_answer(const char* sdp_content,
                                          int* remote_rtp_port,
                                          int* remote_dtmf_payload_type,
                                          int* remote_video_rtp_port,
                                          int* remote_video_payload_type) {
-    if (!sdp_content || !remote_rtp_port || !remote_video_rtp_port) {
+    if (sip_sdp_parse(sdp_content, remote_rtp_port,
+                      remote_dtmf_payload_type, remote_video_rtp_port,
+                      remote_video_payload_type) != 0) {
         return PJ_EINVAL;
-    }
-
-    *remote_rtp_port = 8000;  // Default
-    if (remote_dtmf_payload_type) {
-        *remote_dtmf_payload_type = 101;
-    }
-    *remote_video_rtp_port = 0;
-    if (remote_video_payload_type) {
-        *remote_video_payload_type = 0;
-    }
-
-    const char* media_line = strstr(sdp_content, "m=audio ");
-    if (media_line) {
-        int port;
-        char protocol[32];
-        if (sscanf(media_line, "m=audio %d %31s", &port, protocol) >= 1) {
-            if (strstr(protocol, "RTP") != NULL) {
-                *remote_rtp_port = port;
-                PJ_LOG(3,(THIS_FILE, "Parsed remote RTP port: %d", port));
-            }
-        }
-    }
-
-    media_line = strstr(sdp_content, "m=video ");
-    if (media_line) {
-        int port;
-        char protocol[32];
-        if (sscanf(media_line, "m=video %d %31s", &port, protocol) >= 1) {
-            if (strstr(protocol, "RTP") != NULL && port > 0) {
-                *remote_video_rtp_port = port;
-                PJ_LOG(3,(THIS_FILE, "Parsed remote video RTP port: %d", port));
-            }
-        }
-    }
-
-    if (remote_dtmf_payload_type) {
-        int payload_type = parse_telephone_event_payload_type(sdp_content);
-        if (payload_type > 0) {
-            *remote_dtmf_payload_type = payload_type;
-            PJ_LOG(3,(THIS_FILE, "Parsed remote telephone-event payload type: %d",
-                      *remote_dtmf_payload_type));
-        }
-    }
-
-    if (remote_video_payload_type) {
-        *remote_video_payload_type = parse_h264_payload_type(sdp_content);
-        if (*remote_video_payload_type > 0) {
-            PJ_LOG(3,(THIS_FILE, "Parsed remote H264 payload type: %d",
-                      *remote_video_payload_type));
-        }
     }
 
     PJ_LOG(3,(THIS_FILE, "Remote RTP ports: audio=%d video=%d",
