@@ -66,6 +66,13 @@ This is required before the first custom flash. If
 `/mnt/mtd/wpa_supplicant.conf` is missing or wrong, the custom firmware can boot
 without WiFi and you will need serial to fix it.
 
+If the station configuration is missing or cannot associate, the firmware
+starts a temporary access point. Connect to the identity-derived SSID
+(`IDS7938XXXX`) and open `http://192.168.111.1/`. The small provisioning page
+validates the WPA/WPA2 credentials, writes `/mnt/mtd/wpa_supplicant.conf`
+atomically, and reboots the WiBox. Dropbear is restarted after AP setup so
+SSH remains available while provisioning.
+
 Create `/mnt/mtd/wpa_supplicant.conf` on the WiBox:
 
 ```ini

@@ -26,3 +26,4 @@ ifconfig wlan0 192.168.111.1
 
 hostapd -d -B -P /var/run/hostapd.pid ${HOSTAPD_CONF}
 udhcpd ${UDHCPD_CONF}
+/usr/bin/wifi_portal_start.sh

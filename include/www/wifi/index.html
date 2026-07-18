@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Configurar Wi‑Fi · WiBox</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui,sans-serif; }
+    body { max-width: 32rem; margin: 3rem auto; padding: 0 1rem; }
+    form { display: grid; gap: 1rem; }
+    label { display: grid; gap: .35rem; }
+    input { box-sizing: border-box; font: inherit; padding: .7rem; width: 100%; }
+    button { font: inherit; padding: .75rem; cursor: pointer; }
+    small { opacity: .75; }
+  </style>
+</head>
+<body>
+  <h1>Configurar Wi‑Fi</h1>
+  <p>Introduce la red a la que debe conectarse el WiBox después de reiniciar.</p>
+  <form method="post" action="/cgi-bin/wifi-config.cgi">
+    <label>Nombre de la red (SSID)
+      <input name="ssid" maxlength="32" required autocomplete="off">
+    </label>
+    <label>Contraseña WPA/WPA2
+      <input name="psk" type="password" minlength="8" maxlength="63" required autocomplete="off">
+    </label>
+    <button type="submit">Guardar y reiniciar</button>
+  </form>
+  <p><small>Tras guardar, el AP desaparecerá y el WiBox intentará conectarse a esta red.</small></p>
+</body>
+</html>

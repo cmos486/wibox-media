@@ -7,7 +7,7 @@
 	test-audio-hw test-video-worker test-h264-annexb test-snapshot-file \
 	test-firmware-update test-hardware-watchdog test-app-watchdog \
 	test-runtime-contract test-spec-coverage test-device-contract \
-	test-watchdog coverage \
+	test-watchdog test-wifi-portal coverage \
 	deploy-runtime verify-device verify-runtime verify-mqtt device-status \
 	build-inside extract patch pack clean help
 
@@ -204,6 +204,9 @@ test-device-contract:
 
 test-watchdog:
 	sh tests/watchdog_defaults_test.sh
+
+test-wifi-portal:
+	sh tests/wifi_portal_test.sh
 
 coverage:
 	python3 tests/code_coverage.py
