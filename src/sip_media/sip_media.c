@@ -40,6 +40,9 @@
 #define SNAPSHOT_PATH "/tmp/wibox-snapshot.jpg"
 #define SNAPSHOT_LOG_PATH "/tmp/wibox-snapshot-worker.log"
 #define AUDIO_LINE_MUTE_MAX_MS 3000
+#ifndef WIFI_AP_REQUEST_PATH
+#define WIFI_AP_REQUEST_PATH "/mnt/mtd/wifi_ap_requested"
+#endif
 
 #define RTP_PAYLOAD_DTMF 101    // Common DTMF payload type
 #define DTMF_EVENT_0     0
@@ -88,6 +91,9 @@ static char intercom_last_close_reason[64] = "none";
 static char local_ip_addr[64] = "0.0.0.0";
 static call_session_t current_call_session;
 static int call_session_ready = 0;
+static unsigned long long wifi_button_long_started_ms = 0;
+
+#define WIFI_BUTTON_LONG_SEQUENCE_MAX_MS 10000ULL
 
 typedef struct {
     int open_panel_context;
@@ -2205,6 +2211,31 @@ static void terminate_call_from_serial(const char* reason) {
     sip_calling_terminate_call();
 }
 
+static void request_wifi_ap_mode(void) {
+    static const char marker[] = "requested\n";
+    int fd = open(WIFI_AP_REQUEST_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+    if (fd < 0) {
+        PJ_LOG(2,(THIS_FILE, "Cannot persist AP request %s: %s",
+                  WIFI_AP_REQUEST_PATH, strerror(errno)));
+        return;
+    }
+    if (write(fd, marker, sizeof(marker) - 1) != (ssize_t)(sizeof(marker) - 1) ||
+        fsync(fd) != 0) {
+        PJ_LOG(2,(THIS_FILE, "Cannot commit AP request %s: %s",
+                  WIFI_AP_REQUEST_PATH, strerror(errno)));
+        close(fd);
+        return;
+    }
+    close(fd);
+
+    PJ_LOG(2,(THIS_FILE, "AP provisioning requested from physical WiFi button"));
+    sync();
+    if (reboot(RB_AUTOBOOT) != 0) {
+        PJ_LOG(2,(THIS_FILE, "AP provisioning reboot failed: %s", strerror(errno)));
+    }
+}
+
 static void handle_uart_frame(const unsigned char frame[4]) {
     const uart_code_def_t* def = uart_protocol_find(frame);
 
@@ -2258,6 +2289,10 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         PJ_LOG(2,(THIS_FILE, "Reset command received from panel"));
         system("sync && reboot");
         break;
+    case UART_CODE_STA_TO_AP:
+        /* Retain compatibility with MCU revisions that emit the direct frame. */
+        request_wifi_ap_mode();
+        break;
     case UART_CODE_START_CALL:
         PJ_LOG(3,(THIS_FILE, "Intercom call line is active"));
         mute_audio_input_for_ms(app_config.audio_line_mute_ms, "uart-start-call");
@@ -2276,8 +2311,32 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         break;
     case UART_CODE_MCU_STATE_0:
     case UART_CODE_MCU_STATE_1:
+        break;
     case UART_CODE_CMD_DOWN_LONG_1:
+        wifi_button_long_started_ms = now_ms();
+        PJ_LOG(3,(THIS_FILE, "Physical WiFi button long-press stage 1 received"));
+        break;
     case UART_CODE_CMD_DOWN_LONG_2:
+    {
+        unsigned long long completed_ms = now_ms();
+        unsigned long long elapsed_ms = wifi_button_long_started_ms > 0 &&
+                                        completed_ms >= wifi_button_long_started_ms
+                                            ? completed_ms - wifi_button_long_started_ms
+                                            : WIFI_BUTTON_LONG_SEQUENCE_MAX_MS + 1;
+        wifi_button_long_started_ms = 0;
+        if (elapsed_ms <= WIFI_BUTTON_LONG_SEQUENCE_MAX_MS) {
+            PJ_LOG(2,(THIS_FILE,
+                      "Physical WiFi button long press confirmed after %llu ms",
+                      elapsed_ms));
+            mqtt_publish_uart_event("sta_to_ap", "WIFI_BUTTON_LONG_PRESS",
+                                    frame, 4, (int)frame[2], 1);
+            request_wifi_ap_mode();
+        } else {
+            PJ_LOG(3,(THIS_FILE,
+                      "Ignoring WiFi button stage 2 without recent stage 1"));
+        }
+        break;
+    }
     default:
         break;
     }

@@ -9,6 +9,7 @@ static int test_system(const char *command);
 static int test_reboot(int command);
 static void test_sync(void);
 
+#define WIFI_AP_REQUEST_PATH "/tmp/wibox-orchestration-ap-request"
 #define system test_system
 #define reboot test_reboot
 #define sync test_sync
@@ -302,6 +303,10 @@ static void test_uart_and_control_paths(void) {
     static const unsigned char handset[4] = {0xfb, 0x23, 0x00, 0x2e};
     static const unsigned char push0[4] = {0xfb, 0x19, 0x00, 0x24};
     static const unsigned char push1[4] = {0xfb, 0x19, 0x01, 0x25};
+    static const unsigned char sta_to_ap[4] = {0xfb, 0x21, 0x00, 0x2c};
+    static const unsigned char long_press_1[4] = {0xfb, 0x24, 0x01, 0x30};
+    static const unsigned char long_press_2[4] = {0xfb, 0x24, 0x02, 0x31};
+    FILE *ap_marker;
 
     reset_records();
     handle_uart_frame(unknown);
@@ -318,6 +323,27 @@ static void test_uart_and_control_paths(void) {
     handle_uart_frame(handset);
     CHECK(fake_terminate_count == 2);
     CHECK(prometheus_uart_frame_count >= 5);
+
+    unlink(WIFI_AP_REQUEST_PATH);
+    handle_uart_frame(sta_to_ap);
+    ap_marker = fopen(WIFI_AP_REQUEST_PATH, "r");
+    CHECK(ap_marker != NULL);
+    fclose(ap_marker);
+    CHECK(reboot_count == 1 && sync_count == 1);
+    unlink(WIFI_AP_REQUEST_PATH);
+
+    /* The observed GK7102S button emits a two-frame long-press sequence. A
+     * stage-2 frame alone must never force provisioning. */
+    handle_uart_frame(long_press_2);
+    CHECK(access(WIFI_AP_REQUEST_PATH, F_OK) != 0);
+    CHECK(reboot_count == 1);
+    handle_uart_frame(long_press_1);
+    handle_uart_frame(long_press_2);
+    ap_marker = fopen(WIFI_AP_REQUEST_PATH, "r");
+    CHECK(ap_marker != NULL);
+    fclose(ap_marker);
+    CHECK(reboot_count == 2 && sync_count == 2);
+    unlink(WIFI_AP_REQUEST_PATH);
 
     handle_control_message("UART FB 19 01 25");
     handle_control_message("not-a-command");

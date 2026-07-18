@@ -599,6 +599,7 @@ static void publish_uart_event_config(void) {
              "{\"name\":\"UART Event\",\"unique_id\":\"%s\","
              "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
              "\"event_types\":[\"raw_read\",\"alarm_report\",\"cmd_reset\","
+             "\"sta_to_ap\","
              "\"unlock_door\",\"start_call\",\"stop_call\",\"enable_push_state\","
              "\"disable_push_state\",\"f1_on\",\"f1_off\",\"hang_up_0\","
              "\"hang_up_1\",\"physical_handset_answered\",\"push_state_0\",\"push_state_1\","

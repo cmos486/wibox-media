@@ -26,3 +26,13 @@ ifconfig wlan0 192.168.111.1
 
 hostapd -d -B -P /var/run/hostapd.pid ${HOSTAPD_CONF}
 udhcpd ${UDHCPD_CONF}
+/usr/bin/wifi_portal_start.sh
+
+# A slow blue blink is the persistent physical indication that provisioning is
+# available.  It remains active until the portal accepts Save/Cancel and the
+# device reboots.
+GPIO_SCRIPT=${WIFI_GPIO_SCRIPT:-/usr/bin/gpio.sh}
+if [ -f "${GPIO_SCRIPT}" ]; then
+  . "${GPIO_SCRIPT}"
+  wifi_led_blink_start blue
+fi

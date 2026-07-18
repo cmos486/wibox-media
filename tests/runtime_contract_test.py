@@ -63,6 +63,9 @@ def check_call_wiring():
     uart = function_body(source, "handle_uart_frame")
     for token in ("UART_CODE_ALARM_REPORT", "UART_CODE_HANG_UP_0",
                   "UART_CODE_HANG_UP_1", "UART_CODE_PHYSICAL_HANDSET_ANSWERED",
+                  "UART_CODE_STA_TO_AP", "request_wifi_ap_mode",
+                  "UART_CODE_CMD_DOWN_LONG_1", "UART_CODE_CMD_DOWN_LONG_2",
+                  "WIFI_BUTTON_LONG_SEQUENCE_MAX_MS",
                   "terminate_call_from_serial", "mqtt_publish_uart_event"):
         require(token in uart, f"UART flow missing {token}")
     require("handle_ding_trigger(\"physical_panel\")" in uart,
@@ -98,9 +101,31 @@ def check_boot_and_release_contracts():
     require(len(sofia_commands) == 1, "Sofia warmup must execute exactly once")
     require(boot.count("app_watchdog.sh wibox-media-daemon") == 1,
             "production daemon supervisor is not singular")
-    for token in ("/mnt/mtd/sip_media.conf", "wpa_supplicant", "udhcpc",
+    for token in ("/mnt/mtd/sip_media.conf", "wifi_mode.sh", "wifi_station_manager.sh",
                   "nowayout=0", "soft_noboot=0", "/mnt/mtd/post.sh", "wifi_led blue"):
         require(token in boot, f"boot contract missing {token}")
+    require("timeout -t 150" not in boot, "boot retains the legacy WiFi timeout")
+
+    wifi_manager = read("include/bin/wifi_station_manager.sh")
+    heartbeat = read("include/bin/heartbeat.sh")
+    require("ap_start.sh" not in wifi_manager, "station failure can enter AP mode")
+    require("reboot" not in wifi_manager and "reboot" not in heartbeat,
+            "station recovery can reboot the device")
+    ap_start = read("include/bin/ap_start.sh")
+    gpio = read("include/bin/gpio.sh")
+    portal_cgi = read("include/www/wifi/cgi-bin/wifi-config.cgi")
+    dropbear_restart = read("include/bin/dropbear_restart.sh")
+    require("wifi_led_blink_start blue" in ap_start,
+            "AP mode does not expose a persistent physical indication")
+    require("wifi_led_blink_start" in gpio and "wifi_led_blink_stop" in gpio,
+            "GPIO runtime does not manage the AP blink lifecycle")
+    require("wifi_led_blink_stop" in portal_cgi and "wifi_led green" in portal_cgi,
+            "portal success does not acknowledge Save/Cancel before reboot")
+    require("DROPBEAR_RESTART_ATTEMPTS:-3" in dropbear_restart and
+            "listener process available" in dropbear_restart,
+            "Dropbear network-transition restart is not verified with retries")
+    require("station connectivity lost; scheduling reconnect\"\n        set_wifi_led red" in wifi_manager,
+            "runtime station loss is not indicated in red")
 
     watchdog = read("include/bin/app_watchdog.sh")
     for token in ("WIBOX_OTA_GUARD_PATH", '"PREPARE"', "wait_for_ota_guard",
@@ -142,6 +167,13 @@ def check_boot_and_release_contracts():
     for artifact in ("cramfs/", "release/", ".verify-image-root/", "*.img",
                      "/src/sip_media/*.o", "/include/bin/wibox-media-daemon", ".config"):
         require(artifact in ignored, f"generated artifact is not ignored: {artifact}")
+
+    getting_started = read("docs/getting_started.md")
+    for token in ("IDS7938XXXX", "12-character Device ID", "http://192.168.111.1/",
+                  "Save and restart", "Return to saved Wi-Fi",
+                  "does not automatically\nforce AP mode"):
+        require(token in getting_started,
+                f"end-user WiFi setup documentation missing: {token}")
 
 
 def check_video_contracts():

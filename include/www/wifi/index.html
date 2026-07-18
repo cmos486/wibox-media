@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wi-Fi Setup · WiBox</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui,sans-serif; }
+    body { max-width: 32rem; margin: 3rem auto; padding: 0 1rem; }
+    form { display: grid; gap: 1rem; }
+    label { display: grid; gap: .35rem; }
+    input { box-sizing: border-box; font: inherit; padding: .7rem; width: 100%; }
+    button { font: inherit; padding: .75rem; cursor: pointer; }
+    small { opacity: .75; }
+  </style>
+</head>
+<body>
+  <h1>Wi-Fi Setup</h1>
+  <p>Enter the network that WiBox should connect to after restarting.</p>
+  <form method="post" action="/cgi-bin/wifi-config.cgi">
+    <label>Network name (SSID)
+      <input name="ssid" maxlength="32" required autocomplete="off">
+    </label>
+    <label>WPA/WPA2 password
+      <input name="psk" type="password" minlength="8" maxlength="63" required autocomplete="off">
+    </label>
+    <button type="submit" name="action" value="save">Save and restart</button>
+  </form>
+  <form method="post" action="/cgi-bin/wifi-config.cgi">
+    <button type="submit" name="action" value="cancel" formnovalidate>Return to saved Wi-Fi</button>
+  </form>
+  <p><small>After saving, the access point will disappear and WiBox will try to connect to this network.</small></p>
+</body>
+</html>

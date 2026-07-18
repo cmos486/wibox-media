@@ -15,8 +15,13 @@ boot-and-runtime	Production boot sequence	Normal custom boot	contract.runtime,de
 boot-and-runtime	Single packaged media runtime	Runtime processes are inspected	contract.image,contract.runtime,device.core
 boot-and-runtime	Persistent identity and configuration	First custom boot has no daemon config	host.config,contract.runtime,device.core
 boot-and-runtime	Persistent identity and configuration	Device reboots	host.config,contract.runtime,device.core
-boot-and-runtime	Network recovery after warmup	Warmup drops WiFi	contract.runtime,device.core
+boot-and-runtime	Deterministic WiFi mode selection	AP mode was explicitly requested	host.wifi,contract.runtime,device.network
+boot-and-runtime	Deterministic WiFi mode selection	No station credentials exist	host.wifi,contract.runtime,device.network
+boot-and-runtime	Station retry without reboot	Configured router is temporarily unavailable	host.wifi,contract.runtime,device.network
+boot-and-runtime	Station retry without reboot	Router becomes available after startup	host.wifi,contract.runtime,device.network
 boot-and-runtime	Boot status indication	Production startup completes	contract.runtime,device.core
+boot-and-runtime	Boot status indication	AP provisioning is available	host.wifi,contract.runtime,device.network
+boot-and-runtime	Boot status indication	Configured station is unavailable after startup	host.wifi,contract.runtime,device.network
 boot-and-runtime	Local boot extension	A local post hook exists	contract.runtime,device.core
 build-and-release	Pinned build environment	A contributor builds firmware	contract.runtime,contract.image
 build-and-release	Host regression suite	Host CI runs	host.coverage,contract.runtime
@@ -63,7 +68,7 @@ firmware-updates	Detached install execution	Updater stops its launching daemon	c
 firmware-updates	Successful reboot and duplicate protection	Install is pressed twice	host.firmware-updater,host.mqtt,device.ota
 firmware-updates	Operator modes	Local image lacks expected MD5	host.firmware-updater
 installation-recovery	Factory backup before first flash	A stock device is prepared	device.install
-installation-recovery	Persistent WiFi before first flash	WiFi config is absent	device.install
+installation-recovery	First-boot WiFi provisioning	WiFi config is absent	host.wifi,contract.image,device.install
 installation-recovery	Version-aware shell access	Stock B013 is installed	device.install
 installation-recovery	Verified first image transfer	Network first install	contract.image,device.install
 installation-recovery	Partition-size safety	An image is too large	host.firmware-updater,contract.image,device.install
@@ -75,6 +80,8 @@ intercom-uart	Supported outgoing commands	A command is sent	host.intercom
 intercom-uart	Raw and decoded input events	An unknown frame arrives	host.uart,host.prometheus,host.mqtt,host.sip-media
 intercom-uart	Call-related frame handling	Physical handset is answered	host.uart,host.call-flow,host.sip-media,contract.runtime
 intercom-uart	Non-call telemetry	The physical forward button changes	host.uart,host.mqtt,device.media
+intercom-uart	Physical WiFi provisioning control	WiFi button is held for five seconds	host.uart,host.sip-media,contract.runtime,device.network
+intercom-uart	Physical WiFi provisioning control	Long-press completion arrives without its first stage	host.uart,host.sip-media,contract.runtime
 intercom-uart	Reopen guard	A guarded reopen is requested	host.call-flow,contract.runtime,device.media
 mqtt-home-assistant	Native MQTT client	MQTT is enabled	host.mqtt
 mqtt-home-assistant	Stable topic identity	Identity overrides are empty	host.mqtt,host.config
@@ -86,6 +93,11 @@ mqtt-home-assistant	Dynamic command availability	A snapshot begins	host.mqtt,hos
 mqtt-home-assistant	Reconnect continuity	Broker reconnects during a call	host.mqtt,host.call-session
 mqtt-home-assistant	Legacy retained cleanup	Firmware upgrades from a legacy release	host.mqtt
 network-services	Administrative SSH	Custom firmware boots normally	contract.runtime,device.network
+network-services	Administrative SSH	WiBox enters AP provisioning mode	host.wifi,contract.runtime,device.network
+network-services	AP provisioning portal	User saves new WiFi credentials	host.wifi,contract.image,device.network
+network-services	AP provisioning portal	User opens the provisioning portal	host.wifi,contract.image,device.network
+network-services	AP provisioning portal	User cancels forced AP mode	host.wifi,contract.image,device.network
+network-services	AP provisioning portal	Device is in normal station mode	host.wifi,contract.runtime,device.network
 network-services	SIP and RTP endpoints	Video is disabled	host.sip-sdp,host.call-flow,device.network
 network-services	RTSP endpoint	RTSP credentials are configured	host.rtsp,device.network
 network-services	Prometheus endpoint	Monitoring is disabled	host.prometheus,host.config,device.network

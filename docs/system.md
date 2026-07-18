@@ -57,8 +57,9 @@ The custom `run.sh`:
 - brings up `eth0` as `192.168.1.10`;
 - starts telnet briefly, then Dropbear SSH when available;
 - loads media, audio, sensor and WiFi kernel modules;
-- configures WiFi using `/mnt/mtd/wpa_supplicant.conf` when present;
 - runs `Sofia_temp.sh` once for video hardware warmup;
+- selects station mode or the provisioning AP after warmup;
+- retries a configured station without rebooting when the router is unavailable;
 - starts `wibox-media-daemon` with `app_watchdog.sh`;
 - runs optional `/mnt/mtd/post.sh`.
 
@@ -70,14 +71,19 @@ Ethernet is configured as:
 eth0 192.168.1.10/24
 ```
 
-WiFi station configuration should be persisted before flashing:
+WiFi station configuration is persisted at:
 
 ```text
 /mnt/mtd/wpa_supplicant.conf
 ```
 
-If this file is missing or invalid, the custom firmware may boot without
-network access and require serial recovery.
+If this file is missing, the firmware starts the identity-derived
+`IDS7938XXXX` provisioning AP at `192.168.111.1`; its password is the full
+12-character Device ID printed on the WiBox label. A configured but unavailable
+station is retried indefinitely without rebooting or automatically entering AP
+mode. Holding the physical WiFi button for at least five seconds persists
+`/mnt/mtd/wifi_ap_requested` and reboots into AP mode while preserving the saved
+station credentials.
 
 ## Serial Devices
 

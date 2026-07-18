@@ -32,10 +32,10 @@ Given code `FB 20 00`, CRC last value = `B + 20 + 00` = `0x2B`.
 | `FB 19 00 24` | in/out | PUSH_STATE 0x00 | Physical call-forward state off, observed when the WiBox forward button is toggled. Also sent by Sofia `SetPushState(0)`. This is not a doorbell event. |
 | `FB 19 01 25` | in/out | PUSH_STATE 0x01 | Physical call-forward state on. Also sent by Sofia `SetPushState(1)`. The daemon sends this once on boot when serial listening is enabled. This is not a doorbell event. |
 | `FB 20 00 2B` | in | CMD_RESET | After clicking button P1 (wifi) 5 times. Triggers Sofia to delete wifi and reboot. |
-| `FB 21 00 2C` | in | STA_TO_AP | After pressing for +5s the button, triggers Sofia to reboot and start in AP mode. |
+| `FB 21 00 2C` | in | STA_TO_AP | Legacy direct station-to-AP request retained for compatible MCU revisions. |
 | `FB 23 00 2E` | in | PHYSICAL_HANDSET_ANSWERED 0x00 | Pick the call from physical intercom phone. Additional params: ch = 1 |
-| `FB 24 01 30` | in | CMD_DOWN_LONG 0x01 | Received every 5 minutes. |
-| `FB 24 02 31` | in | CMD_DOWN_LONG 0x02 | Received every 5 minutes after previous one. |
+| `FB 24 01 30` | in | CMD_DOWN_LONG 0x01 | Physical WiFi long-press stage 1, observed on GK7102S hardware. |
+| `FB 24 02 31` | in | CMD_DOWN_LONG 0x02 | Long-press completion, observed about 3 seconds after stage 1. The custom daemon requires the ordered pair within 10 seconds before requesting AP mode. |
 | `FB 26 00 31` | in | CMD_FAC_SSID_POSTFIX 0x00 | Unknown, received on booting new version B013. |
 
 Other unknown found:

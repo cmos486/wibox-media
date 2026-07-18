@@ -53,29 +53,80 @@ daemon configuration, Dropbear keys and optional `post.sh` SHALL live under
 - THEN those files survive
 - AND runtime logs and temporary files do not
 
-### Requirement: Network recovery after warmup
+### Requirement: Deterministic WiFi mode selection
 
-Because Sofia warmup can disrupt WiFi, boot SHALL re-establish station mode
-after warmup and MAY fall back to the stock AP path when station configuration
-cannot be used.
+Boot SHALL complete Sofia warmup before final WiFi configuration. A persistent
+`/mnt/mtd/wifi_ap_requested` marker SHALL select AP mode without attempting
+station association. When the marker is absent, an existing persistent station
+configuration SHALL select station mode; missing station credentials SHALL
+select AP provisioning mode.
 
-#### Scenario: Warmup drops WiFi
+#### Scenario: AP mode was explicitly requested
 
-- GIVEN Sofia warmup completed
-- WHEN the previous WiFi processes no longer provide connectivity
-- THEN boot restarts WiFi association and DHCP before declaring completion
+- GIVEN `/mnt/mtd/wifi_ap_requested` exists
+- WHEN boot completes Sofia warmup
+- THEN the WiBox starts AP provisioning without waiting for station or DHCP timeouts
+- AND the previous station configuration remains unchanged
+
+#### Scenario: No station credentials exist
+
+- GIVEN `/mnt/mtd/wpa_supplicant.conf` is absent
+- AND AP mode was not explicitly requested
+- WHEN boot selects its network mode
+- THEN the WiBox starts AP provisioning automatically
+
+### Requirement: Station retry without reboot
+
+When persistent station credentials exist and AP mode was not requested, the
+WiBox SHALL remain in station mode. Association SHALL use a 20-second timeout
+and DHCP SHALL use a 10-second timeout.
+Failure SHALL be retried with bounded backoff without rebooting or entering AP
+mode. A later successful lease SHALL make SSH reachable and restart the media
+daemon when necessary so it binds the acquired address.
+
+#### Scenario: Configured router is temporarily unavailable
+
+- GIVEN valid persistent station credentials exist
+- AND `/mnt/mtd/wifi_ap_requested` is absent
+- WHEN association or DHCP fails
+- THEN the WiBox remains in station mode
+- AND retries with bounded backoff
+- AND does not reboot or start the provisioning AP
+
+#### Scenario: Router becomes available after startup
+
+- GIVEN the station retry manager is running without a lease
+- WHEN association and DHCP later succeed
+- THEN the WiBox becomes reachable without a power cycle
+- AND Dropbear and the media daemon use the acquired station interface
 
 ### Requirement: Boot status indication
 
-The boot scripts SHALL use red for boot or WiFi failure, off while WiFi setup is
-in progress, green after successful association/DHCP and blue after production
-startup completes.
+The network scripts SHALL use red for boot or station retry, off while WiFi
+setup is in progress, green after successful association/DHCP during boot and
+blue after production station startup completes. While AP provisioning is
+available, the blue LED SHALL blink slowly instead of remaining solid. An
+accepted portal Save or Cancel action SHALL stop the blink and show green before
+the controlled reboot.
 
 #### Scenario: Production startup completes
 
 - GIVEN the daemon has been launched
 - WHEN boot removes the heartbeat lock
 - THEN the status LED becomes blue
+
+#### Scenario: AP provisioning is available
+
+- GIVEN the provisioning AP and portal are running
+- WHEN production startup completes
+- THEN the blue status LED continues blinking until Save or Cancel is accepted
+
+#### Scenario: Configured station is unavailable after startup
+
+- GIVEN production station startup previously completed
+- WHEN association or DHCP must be retried
+- THEN the status LED becomes red
+- AND it returns to solid blue after a station address is recovered
 
 ### Requirement: Local boot extension
 

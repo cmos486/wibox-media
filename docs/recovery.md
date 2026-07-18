@@ -56,8 +56,14 @@ flash.
 
 ## 3. Linux Shell Without Network
 
-If Linux boots but network is unusable, fix `/mnt/mtd/wpa_supplicant.conf` if
-possible and reboot.
+If Linux boots but the configured network is unusable, hold the physical WiFi
+button for at least five seconds. The WiBox reboots into its provisioning AP;
+connect to `IDS7938XXXX` using the full 12-character Device ID printed on the
+WiBox label as the password, then open `http://192.168.111.1/`. Select **Save
+and restart** to replace the credentials or **Return to saved Wi-Fi** to leave
+them unchanged. Serial can still repair `/mnt/mtd/wpa_supplicant.conf` directly
+when required. The status LED blinks blue for as long as this provisioning AP
+is active.
 
 If you cannot transfer a known-good image into `/tmp/update.img`, use U-Boot
 recovery instead.

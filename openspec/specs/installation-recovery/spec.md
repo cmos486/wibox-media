@@ -19,16 +19,18 @@ least the original `/usr` image preserved off-device.
 - THEN `mtd0` through `mtd6` can be copied to a computer
 - AND the backup is completed before writing custom firmware
 
-### Requirement: Persistent WiFi before first flash
+### Requirement: First-boot WiFi provisioning
 
-`/mnt/mtd/wpa_supplicant.conf` SHALL be created and checked before first custom
-flash because loss of WiFi may otherwise require serial recovery.
+Operators SHOULD create and check `/mnt/mtd/wpa_supplicant.conf` before first
+custom flash. When it is absent, the custom firmware SHALL provide AP
+provisioning instead of requiring serial recovery.
 
 #### Scenario: WiFi config is absent
 
 - GIVEN a stock device has no persistent WiFi configuration
-- WHEN installation preparation is reviewed
-- THEN flashing is deferred until WiFi is configured or serial recovery is available
+- WHEN the custom firmware reaches final network setup
+- THEN it starts AP provisioning
+- AND the operator can create the persistent station configuration from the web UI
 
 ### Requirement: Version-aware shell access
 

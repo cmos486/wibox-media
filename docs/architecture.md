@@ -11,9 +11,11 @@ This is the current production shape of the custom WiBox image.
   -> /usr/run.sh
        -> GPIO and LED setup
        -> kernel modules
-       -> WiFi station setup from /mnt/mtd/wpa_supplicant.conf
        -> Dropbear SSH
        -> short Sofia warmup for video hardware
+       -> WiFi mode selection
+            -> station manager with bounded retry/backoff
+            -> or AP + DHCP + provisioning portal
        -> app_watchdog.sh wibox-media-daemon /usr/bin/wibox-media-daemon
        -> optional /mnt/mtd/post.sh
 ```
@@ -21,6 +23,18 @@ This is the current production shape of the custom WiBox image.
 Sofia is still used once per boot to initialize hardware state that the D1 video
 capture path depends on. It is stopped after the warmup. It is not used per
 call.
+
+Station credentials select station mode even when the router is temporarily
+unavailable. The station manager retries without rebooting and restarts network
+consumers after a later lease. Missing credentials or the persistent
+`wifi_ap_requested` marker selects AP mode. The physical WiFi button's observed
+`CMD_DOWN_LONG_1`/`CMD_DOWN_LONG_2` sequence creates that marker; saving or
+cancelling in the portal clears it. The legacy direct `STA_TO_AP` frame remains
+supported for compatible MCU revisions.
+
+Both station and AP transitions use `dropbear_restart.sh`, which waits for the
+old listener to exit, retries startup and verifies the replacement process so
+SSH does not depend on interface-transition timing.
 
 ## Runtime Ownership
 
@@ -199,14 +213,18 @@ ring/unlock/call counters, video state and WiFi RSSI.
 
 ## LED Policy
 
-LEDs are currently owned by `run.sh`, not the daemon:
+LEDs are owned by the boot and network-mode scripts, not the daemon:
 
 ```text
-red    booting or WiFi failure
+red    booting or station association/DHCP retry
 off    WiFi setup in progress
 green  WiFi associated and DHCP succeeded
-blue   production boot complete and daemon started
+blue   production station boot complete and daemon started
+blue blinking slowly  AP provisioning and web portal available
 ```
+
+An accepted portal Save or Cancel stops the AP blink and shows green until the
+controlled reboot begins.
 
 `gpio.sh` also initializes board lines that must be ready before media startup,
 including the audio chip enable line on GPIO 18.
