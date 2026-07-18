@@ -10,7 +10,10 @@ the custom image.
 ### Requirement: Administrative SSH
 
 The custom image SHALL provide Dropbear SSH on TCP 22 with password or key
-authentication and persistent host keys under `/mnt/mtd/dropbear`.
+authentication and persistent host keys under `/mnt/mtd/dropbear`. After a STA
+or AP interface transition, the firmware SHALL wait for the previous Dropbear
+process to exit, retry startup up to three times and verify that a replacement
+listener process exists.
 
 #### Scenario: Custom firmware boots normally
 
@@ -23,7 +26,7 @@ authentication and persistent host keys under `/mnt/mtd/dropbear`.
 
 - GIVEN Dropbear started before final WiFi configuration
 - WHEN the AP interface and address are established
-- THEN Dropbear is restarted
+- THEN Dropbear is restarted and verified with bounded retries
 - AND SSH is reachable through `192.168.111.1`
 
 ### Requirement: AP provisioning portal

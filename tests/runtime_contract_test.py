@@ -114,12 +114,16 @@ def check_boot_and_release_contracts():
     ap_start = read("include/bin/ap_start.sh")
     gpio = read("include/bin/gpio.sh")
     portal_cgi = read("include/www/wifi/cgi-bin/wifi-config.cgi")
+    dropbear_restart = read("include/bin/dropbear_restart.sh")
     require("wifi_led_blink_start blue" in ap_start,
             "AP mode does not expose a persistent physical indication")
     require("wifi_led_blink_start" in gpio and "wifi_led_blink_stop" in gpio,
             "GPIO runtime does not manage the AP blink lifecycle")
     require("wifi_led_blink_stop" in portal_cgi and "wifi_led green" in portal_cgi,
             "portal success does not acknowledge Save/Cancel before reboot")
+    require("DROPBEAR_RESTART_ATTEMPTS:-3" in dropbear_restart and
+            "listener process available" in dropbear_restart,
+            "Dropbear network-transition restart is not verified with retries")
     require("station connectivity lost; scheduling reconnect\"\n        set_wifi_led red" in wifi_manager,
             "runtime station loss is not indicated in red")
 

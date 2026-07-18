@@ -18,11 +18,9 @@ fi
 killall -q httpd 2>/dev/null || true
 busybox httpd -p 80 -h "${WEB_ROOT}" >/dev/null 2>&1 &
 
-# Rebind SSH after the station-to-AP transition.  On this platform the
-# early Dropbear listener can remain unreachable after wlan0 is reconfigured.
-killall -q dropbear 2>/dev/null || true
-if command -v dropbear >/dev/null 2>&1; then
-    dropbear -R >/dev/null 2>&1 || true
-elif [ -x /sbin/dropbear ]; then
-    /sbin/dropbear -R >/dev/null 2>&1 || true
+# Rebind SSH after the station-to-AP transition. The shared helper waits for
+# the old listener to exit and verifies the replacement process with retries.
+DROPBEAR_RESTART=${WIFI_DROPBEAR_RESTART:-/usr/bin/dropbear_restart.sh}
+if [ -x "$DROPBEAR_RESTART" ]; then
+    "$DROPBEAR_RESTART" || true
 fi

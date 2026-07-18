@@ -21,6 +21,7 @@ KILLALL=${WIFI_KILLALL:-/bin/killall}
 PIDOF=${WIFI_PIDOF:-/bin/pidof}
 SLEEP=${WIFI_SLEEP:-/bin/sleep}
 GPIO_SCRIPT=${WIFI_GPIO_SCRIPT:-/usr/bin/gpio.sh}
+DROPBEAR_RESTART=${WIFI_DROPBEAR_RESTART:-/usr/bin/dropbear_restart.sh}
 
 mkdir -p "$(dirname "$LOG_PATH")"
 
@@ -74,11 +75,10 @@ wait_until() {
 }
 
 restart_network_consumers() {
-    "$KILLALL" -q dropbear 2>/dev/null || true
-    if command -v dropbear >/dev/null 2>&1; then
-        dropbear -R >/dev/null 2>&1 || true
-    elif [ -x /sbin/dropbear ]; then
-        /sbin/dropbear -R >/dev/null 2>&1 || true
+    if [ -x "$DROPBEAR_RESTART" ]; then
+        "$DROPBEAR_RESTART" || log "Dropbear restart failed"
+    else
+        log "Dropbear restart helper missing"
     fi
 
     if "$PIDOF" wibox-media-daemon >/dev/null 2>&1; then

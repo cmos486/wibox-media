@@ -32,6 +32,10 @@ consumers after a later lease. Missing credentials or the persistent
 cancelling in the portal clears it. The legacy direct `STA_TO_AP` frame remains
 supported for compatible MCU revisions.
 
+Both station and AP transitions use `dropbear_restart.sh`, which waits for the
+old listener to exit, retries startup and verifies the replacement process so
+SSH does not depend on interface-transition timing.
+
 ## Runtime Ownership
 
 `wibox-media-daemon` is the only packaged media runtime.

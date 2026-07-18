@@ -28,6 +28,7 @@ backups/
 /include/bin/scp
 /include/bin/strace
 /include/bin/dropbear*
+!/include/bin/dropbear_restart.sh
 /include/sbin/
 /include/etc/wibox-release
 

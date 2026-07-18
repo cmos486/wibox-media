@@ -5,13 +5,15 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 MODE="$ROOT/include/bin/wifi_mode.sh"
 MANAGER="$ROOT/include/bin/wifi_station_manager.sh"
 PORTAL_START="$ROOT/include/bin/wifi_portal_start.sh"
+DROPBEAR_RESTART="$ROOT/include/bin/dropbear_restart.sh"
 CGI="$ROOT/include/www/wifi/cgi-bin/wifi-config.cgi"
 GPIO="$ROOT/include/bin/gpio.sh"
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT HUP INT TERM
 
 sh -n "$ROOT/include/run.sh" "$ROOT/include/bin/ap_start.sh" \
-    "$ROOT/include/bin/heartbeat.sh" "$MODE" "$MANAGER" "$PORTAL_START" "$CGI" "$GPIO"
+    "$ROOT/include/bin/heartbeat.sh" "$MODE" "$MANAGER" "$PORTAL_START" \
+    "$DROPBEAR_RESTART" "$CGI" "$GPIO"
 
 CONFIG="$TEST_DIR/wpa_supplicant.conf"
 MARKER="$TEST_DIR/wifi_ap_requested"
@@ -57,6 +59,41 @@ wifi_led() {
 EOF
 MOCK_LED_LOG="$TEST_DIR/led.log"
 export MOCK_LED_LOG
+
+# The shared Dropbear transition helper waits, retries and verifies the
+# replacement instead of assuming that one immediate start succeeded.
+cat >"$TEST_DIR/mock-dropbear" <<'EOF'
+#!/bin/sh
+count=0
+[ ! -f "$MOCK_DROPBEAR_COUNT" ] || count=$(cat "$MOCK_DROPBEAR_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" >"$MOCK_DROPBEAR_COUNT"
+[ "$count" -lt 2 ] || : >"$MOCK_DROPBEAR_STATE"
+exit 0
+EOF
+cat >"$TEST_DIR/mock-dropbear-pidof" <<'EOF'
+#!/bin/sh
+[ -f "$MOCK_DROPBEAR_STATE" ]
+EOF
+cat >"$TEST_DIR/mock-dropbear-killall" <<'EOF'
+#!/bin/sh
+rm -f "$MOCK_DROPBEAR_STATE"
+EOF
+chmod +x "$TEST_DIR/mock-dropbear" "$TEST_DIR/mock-dropbear-pidof" \
+    "$TEST_DIR/mock-dropbear-killall"
+MOCK_DROPBEAR_COUNT="$TEST_DIR/dropbear.count"
+MOCK_DROPBEAR_STATE="$TEST_DIR/dropbear.state"
+export MOCK_DROPBEAR_COUNT MOCK_DROPBEAR_STATE
+DROPBEAR_BIN="$TEST_DIR/mock-dropbear" \
+DROPBEAR_PIDOF="$TEST_DIR/mock-dropbear-pidof" \
+DROPBEAR_KILLALL="$TEST_DIR/mock-dropbear-killall" \
+DROPBEAR_SLEEP=/bin/true \
+DROPBEAR_RESTART_LOG="$TEST_DIR/dropbear.log" \
+    "$DROPBEAR_RESTART"
+[ "$(cat "$MOCK_DROPBEAR_COUNT")" = "2" ]
+grep -q 'start attempt=1' "$TEST_DIR/dropbear.log"
+grep -q 'start attempt=2' "$TEST_DIR/dropbear.log"
+grep -q 'listener process available' "$TEST_DIR/dropbear.log"
 
 # Exercise the real GPIO helper against a fake sysfs tree. The AP indicator
 # must drive blue, keep a managed background process and stop on request.
@@ -104,6 +141,7 @@ run_manager() {
     WIFI_PIDOF=/bin/false \
     WIFI_SLEEP=/bin/true \
     WIFI_GPIO_SCRIPT="$TEST_DIR/mock-gpio.sh" \
+    WIFI_DROPBEAR_RESTART=/bin/true \
     "$MANAGER"
 }
 
@@ -160,6 +198,9 @@ tail -1 "$MOCK_LED_LOG" | grep -q '^green$'
 # owns solid blue, so run.sh must not overwrite the AP indication.
 grep -q 'wifi_led_blink_start blue' "$ROOT/include/bin/ap_start.sh"
 grep -q 'if \[ "$WIFI_MODE" = "station" \]' "$ROOT/include/run.sh"
+grep -q 'MAX_ATTEMPTS=.*3' "$DROPBEAR_RESTART"
+grep -q 'listener process available' "$DROPBEAR_RESTART"
+grep -q 'dropbear_restart.sh' "$MANAGER" "$PORTAL_START"
 
 invalid='action=save&ssid=x&psk=short'
 if printf '%s' "$invalid" |
