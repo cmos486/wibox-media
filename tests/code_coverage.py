@@ -174,7 +174,7 @@ def main():
                      intercom_test, ["-Wl,--wrap=access", "-Wl,--wrap=open",
                                       "-Wl,--wrap=write", "-Wl,--wrap=close"])
         compile_test("tests/prometheus_integration_test.c", [prometheus_object],
-                     prometheus_test, ["-pthread"])
+                     prometheus_test, ["-pthread", "-Wl,--wrap=time"])
         compile_test("tests/rtsp_integration_test.c", [rtsp_object], rtsp_test,
                      ["-pthread"])
         compile_test("tests/audio_hw_mock_test.c", [audio_hw_object], audio_hw_test,

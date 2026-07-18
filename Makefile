@@ -126,7 +126,8 @@ test-prometheus:
 		$(CC) -Wall -Wextra -Werror -std=gnu99 -pthread -Isrc/sip_media \
 			-DWIBOX_VERSION='"coverage-test"' -DWIBOX_COMMIT='"test-commit"' \
 			-DWIBOX_BUILD_TIMESTAMP='"2026-07-14T00:00:00Z"' \
-			tests/prometheus_integration_test.c src/sip_media/prometheus.c -o "$$bin"; \
+			tests/prometheus_integration_test.c src/sip_media/prometheus.c \
+			-Wl,--wrap=time -o "$$bin"; \
 		"$$bin"
 
 test-rtsp:

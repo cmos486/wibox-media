@@ -10,10 +10,12 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
 #define PROM_FILE "prometheus"
+#define PROM_CLIENT_RECV_TIMEOUT_SECONDS 1
 
 #ifndef WIBOX_VERSION
 #define WIBOX_VERSION "dev-unknown"
@@ -30,7 +32,8 @@ typedef struct {
     int running;
     int listen_fd;
     int port;
-    time_t start_time;
+    struct timespec start_monotonic;
+    int monotonic_ready;
 
     int call_active;
     int sip_call_active;
@@ -101,10 +104,29 @@ static int get_wifi_rssi(void) {
     return rssi;
 }
 
+static unsigned long get_uptime_seconds(void) {
+    struct timespec now;
+    time_t seconds;
+
+    if (!prom_state.monotonic_ready ||
+        clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+
+    seconds = now.tv_sec - prom_state.start_monotonic.tv_sec;
+    if (seconds < 0) {
+        return 0;
+    }
+    if (seconds > 0 && now.tv_nsec < prom_state.start_monotonic.tv_nsec) {
+        seconds--;
+    }
+    return (unsigned long)seconds;
+}
+
 static void build_metrics(char* body, size_t body_size) {
     prometheus_state_t snapshot;
-    time_t now = time(NULL);
     int wifi_rssi = get_wifi_rssi();
+    unsigned long uptime_seconds = get_uptime_seconds();
 
     pthread_mutex_lock(&prom_mutex);
     snapshot = prom_state;
@@ -125,7 +147,7 @@ static void build_metrics(char* body, size_t body_size) {
     snprintf(body + strlen(body), body_size - strlen(body),
              "# HELP wibox_uptime_seconds Daemon uptime in seconds.\n"
              "# TYPE wibox_uptime_seconds counter\n"
-             "wibox_uptime_seconds %ld\n"
+             "wibox_uptime_seconds %lu\n"
              "# HELP wibox_health Exporter health, 1 when the daemon can serve metrics.\n"
              "# TYPE wibox_health gauge\n"
              "wibox_health 1\n"
@@ -147,7 +169,7 @@ static void build_metrics(char* body, size_t body_size) {
              "# HELP wibox_ringing Panel ringing state.\n"
              "# TYPE wibox_ringing gauge\n"
              "wibox_ringing %d\n",
-             (long)(now - snapshot.start_time),
+             uptime_seconds,
              mqtt_is_connected(),
              snapshot.call_active,
              snapshot.sip_call_active,
@@ -240,6 +262,12 @@ static void handle_client(int fd) {
     char request[256];
     char body[8192];
     ssize_t n;
+    struct timeval timeout = {PROM_CLIENT_RECV_TIMEOUT_SECONDS, 0};
+
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                   &timeout, sizeof(timeout)) < 0) {
+        return;
+    }
 
     n = recv(fd, request, sizeof(request) - 1, 0);
     if (n <= 0) {
@@ -305,7 +333,12 @@ int prometheus_start(int port) {
     memset(&prom_state, 0, sizeof(prom_state));
     prom_state.listen_fd = -1;
     prom_state.port = port;
-    prom_state.start_time = time(NULL);
+    if (clock_gettime(CLOCK_MONOTONIC, &prom_state.start_monotonic) == 0) {
+        prom_state.monotonic_ready = 1;
+    } else {
+        memset(&prom_state.start_monotonic, 0,
+               sizeof(prom_state.start_monotonic));
+    }
 
     prom_state.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (prom_state.listen_fd < 0) {

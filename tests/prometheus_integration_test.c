@@ -21,6 +21,14 @@ int mqtt_is_connected(void)
     return 1;
 }
 
+static time_t fake_wall_time = 1000;
+
+time_t __wrap_time(time_t *result)
+{
+    if (result) *result = fake_wall_time;
+    return fake_wall_time;
+}
+
 static int reserve_port(void)
 {
     struct sockaddr_in address;
@@ -81,9 +89,29 @@ static int http_get(int port, const char *path, char *response, size_t size)
     return (int)used;
 }
 
+static int connect_idle_client(int port)
+{
+    struct sockaddr_in address;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons((unsigned short)port);
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 int main(void)
 {
     char response[16384];
+    const char *uptime_line;
+    long uptime_seconds;
+    int idle_fd;
     int port = reserve_port();
 
     CHECK(port > 0);
@@ -91,6 +119,13 @@ int main(void)
     CHECK(prometheus_start(65536) == -1);
     CHECK(prometheus_start(port) == 0);
     CHECK(prometheus_start(port) == 0);
+
+    idle_fd = connect_idle_client(port);
+    CHECK(idle_fd >= 0);
+    usleep(50000);
+    CHECK(http_get(port, "/healthz", response, sizeof(response)) > 0);
+    CHECK(strstr(response, "HTTP/1.1 200 OK") != NULL);
+    close(idle_fd);
 
     prometheus_set_call_active(1);
     prometheus_set_sip_call_active(1);
@@ -109,6 +144,7 @@ int main(void)
     prometheus_inc_uart_reset();
     prometheus_inc_uart_push_state();
     prometheus_inc_uart_f1();
+    fake_wall_time = 900;
 
     CHECK(http_get(port, "/healthz", response, sizeof(response)) > 0);
     CHECK(strstr(response, "HTTP/1.1 200 OK") != NULL);
@@ -127,6 +163,10 @@ int main(void)
     CHECK(strstr(response, "wibox_uart_frames_total 1") != NULL);
     CHECK(strstr(response, "wibox_uart_unknown_frames_total 1") != NULL);
     CHECK(strstr(response, "wibox_uart_f1_total 1") != NULL);
+    uptime_line = strstr(response, "\nwibox_uptime_seconds ");
+    CHECK(uptime_line != NULL);
+    CHECK(sscanf(uptime_line + 1, "wibox_uptime_seconds %ld", &uptime_seconds) == 1);
+    CHECK(uptime_seconds >= 0);
 
     CHECK(http_get(port, "/missing", response, sizeof(response)) > 0);
     CHECK(strstr(response, "HTTP/1.1 404 Not Found") != NULL);
