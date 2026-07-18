@@ -91,43 +91,42 @@ Persistent config lives at:
 /mnt/mtd/sip_media.conf
 ```
 
-Minimal example:
+The firmware creates this file from the packaged defaults when it is missing.
+For a typical installation, the values that need changing are the SIP target
+and MQTT broker credentials:
 
 ```ini
-sip_outgoing_call_enabled=1
 outgoing_call_target=sip:1000@192.168.0.31:5060
-mqtt_enabled=1
 mqtt_host=192.168.0.203
 mqtt_user=wibox
 mqtt_pass=change-me
-firmware_update_enabled=1
-prometheus_enabled=1
 ```
 
-Fresh installations default to `video_enabled=0`, `rtsp_enabled=0`,
-`video_bitrate_kbps=4096`, `sip_outgoing_call_enabled=1`,
-`outgoing_call_timeout=60` and `ring_snapshot_delay_ms=2000`.
+The complete packaged configuration and its defaults are documented in
+[Runtime](docs/sip_media.md). The most relevant fresh-install defaults are
+`video_enabled=0`, `rtsp_enabled=0`, `video_bitrate_kbps=4096`,
+`sip_outgoing_call_enabled=1`, `outgoing_call_timeout=60` and
+`ring_snapshot_delay_ms=2000`.
+
 `sip_outgoing_call_enabled=0` keeps Home Assistant `media_state=ringing`
 notifications on doorbell press but skips the automatic outgoing SIP INVITE.
 `outgoing_call_timeout` controls how long the ring/call attempt may stay in
 `ringing` before returning to `idle`, regardless of whether the SIP INVITE is
 enabled.
+
 `video_enabled` is the global video capability flag for installations with a
-camera path; when it is off, SIP and RTSP run audio-only. These keys can be set
-in the file as boot defaults, but Home Assistant controls publish retained MQTT
-overrides that take priority after startup. Video resolution is not exposed as a
-free-form setting; the proven
-capture mode is D1 `688x576`, and any future resolution control must be a
-closed MQTT select.
+camera path; when it is off, SIP and RTSP run audio-only. The file provides boot
+defaults. The Home Assistant controls for video, RTSP, video bitrate, outgoing
+SIP enablement, SIP target, call timeout and ring snapshot delay publish retained
+MQTT overrides that take priority after startup.
 
-Advanced H.264 defaults are `video_gop_n=25`, `video_idr_interval=1`,
-`video_brc_mode=0` and `video_rtsp_periodic_idr_ms=0`. This keeps the natural
-one-second GOP and avoids periodic RTSP IDR spam; new clients still request an
-IDR frame when they attach.
+Video resolution is fixed to the validated D1 `688x576` capture mode. Optional
+encoder tuning, bounded diagnostic recording and RTSP authentication settings
+are listed in [Runtime](docs/sip_media.md); they are not all exposed as Home
+Assistant controls. Diagnostic recording is disabled by default and its default
+path is `/tmp/wibox-last-call.h264`. Do not point it at persistent flash.
 
-File recording is disabled by default; at 4096 kbps a 30 second H.264 clip is
-about 15 MiB and only fits temporarily in `/tmp`, never in persistent flash.
-Experimental RTSP can be enabled with `rtsp_enabled=1`; it exposes
+RTSP can be enabled with `rtsp_enabled=1`; it exposes
 `rtsp://<wibox-ip>:8554/live`. With `video_enabled=1` it serves H.264 D1 video
 plus PCMA audio; with `video_enabled=0` it serves audio-only. Optional Basic
 auth is configured with `rtsp_auth_user` and `rtsp_auth_pass`. SIP calls attach
