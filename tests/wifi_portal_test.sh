@@ -70,6 +70,7 @@ done
     WIFI_LED_BLINK_INTERVAL=5
     export WIFI_LED_GPIO_ROOT WIFI_LED_BLINK_PID_PATH WIFI_LED_BLINK_INTERVAL
     . "$GPIO"
+    trap 'wifi_led_blink_stop' EXIT HUP INT TERM
     wifi_led_blink_start blue
     sleep 0.1
     [ "$(cat "$TEST_DIR/gpio/gpio11/value")" = "1" ]
@@ -81,6 +82,7 @@ done
     sleep 0.1
     ! kill -0 "$blink_pid" 2>/dev/null
     [ ! -f "$TEST_DIR/blink.pid" ]
+    trap - EXIT HUP INT TERM
 )
 
 run_manager() {

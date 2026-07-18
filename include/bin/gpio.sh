@@ -14,7 +14,7 @@ setup_gpio(){
   fi
   
   DIRECTION=low
-  [ "$V" == "1" ] && DIRECTION=high
+  [ "$V" = "1" ] && DIRECTION=high
 
   echo 0 > ${GPION}/active_low
   echo $DIRECTION > ${GPION}/direction
@@ -34,13 +34,13 @@ set_gpio(){ echo $2 > ${GPIOD}/gpio$1/value; }
 
 wifi_led() {
   L=
-  [ "$1" == "red" ] && L=10
-  [ "$1" == "green" ] && L=12
-  [ "$1" == "blue" ] && L=11
+  [ "$1" = "red" ] && L=10
+  [ "$1" = "green" ] && L=12
+  [ "$1" = "blue" ] && L=11
 
   for LED in 10 11 12; do
     V=0
-    [ "$LED" == "$L" ] && V=1
+    [ "$LED" = "$L" ] && V=1
     set_gpio $LED $V
   done
 }
