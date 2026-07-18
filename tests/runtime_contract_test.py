@@ -168,6 +168,13 @@ def check_boot_and_release_contracts():
                      "/src/sip_media/*.o", "/include/bin/wibox-media-daemon", ".config"):
         require(artifact in ignored, f"generated artifact is not ignored: {artifact}")
 
+    getting_started = read("docs/getting_started.md")
+    for token in ("IDS7938XXXX", "12-character Device ID", "http://192.168.111.1/",
+                  "Save and restart", "Return to saved Wi-Fi",
+                  "does not automatically\nforce AP mode"):
+        require(token in getting_started,
+                f"end-user WiFi setup documentation missing: {token}")
+
 
 def check_video_contracts():
     bridge = read("src/video_rtp_bridge/video_rtp_bridge.c")

@@ -60,8 +60,10 @@ Newer versions should also be treated as serial-only until proven otherwise.
 ## User Journey
 
 1. Read [Getting Started](docs/getting_started.md) before touching a stock
-   device. It covers access, backup, WiFi persistence, first flash and first
-   boot.
+   device. It covers access, backup, first flash and first boot. A new WiBox can
+   be configured without serial after flashing: join its temporary
+   `IDS7938XXXX` access point with the Device ID printed on the label, then open
+   `http://192.168.111.1/`.
 2. If telnet is unavailable or the device does not boot, use
    [Serial TTL](docs/serial_ttl.md) and [Recovery](docs/recovery.md).
 3. After first boot, configure `/mnt/mtd/sip_media.conf` for SIP, MQTT,
@@ -75,6 +77,11 @@ Newer versions should also be treated as serial-only until proven otherwise.
 6. Future updates should use [Firmware Updates](docs/updates.md). The WiBox
    includes its own HTTPS-capable updater because stock `wget` cannot download
    GitHub release assets.
+
+To change an existing WiFi network, hold the physical WiFi button for at least
+five seconds. A blinking blue status LED means the setup access point and web
+page are ready. Saved credentials that temporarily fail are retried rather than
+automatically switching the device into AP mode.
 
 ## Configuration Summary
 

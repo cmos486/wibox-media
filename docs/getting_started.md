@@ -6,8 +6,8 @@ The first installation is different from later updates:
 
 - stock firmware normally has telnet or serial, not SSH;
 - stock `wget` cannot download GitHub HTTPS release assets;
-- WiFi configuration must be persisted before flashing or the custom firmware
-  may boot without network access.
+- WiFi can be preconfigured before flashing or entered through the temporary
+  provisioning access point after the first custom boot.
 
 ## 1. Check The Stock Firmware
 
@@ -62,21 +62,44 @@ Replace `192.168.1.100` with your computer's IP on the same network.
 
 ## 4. Configure Persistent WiFi
 
-Creating this before the first custom flash remains recommended, but it is no
-longer required for recovery. If `/mnt/mtd/wpa_supplicant.conf` is absent, the
-firmware starts a temporary access point. Connect to the identity-derived SSID
-(`IDS7938XXXX`) and open `http://192.168.111.1/`.
+### First setup without serial
 
-If credentials exist but the router is temporarily unavailable, the WiBox stays
-in station mode and retries association and DHCP without rebooting or switching
-to AP. Hold the physical WiFi button for at least five seconds to force the
-provisioning AP. This preserves the saved credentials; the web page can either
-replace them or cancel AP mode and return to the saved network. Dropbear is
-restarted after each network transition so SSH follows the active interface.
-The status LED blinks blue while the provisioning AP and portal are available;
-it changes briefly to green when Save or Cancel is accepted.
+You do not need to create a WiFi file manually. If
+`/mnt/mtd/wpa_supplicant.conf` is absent, the first custom boot automatically
+starts the provisioning access point:
 
-Create `/mnt/mtd/wpa_supplicant.conf` on the WiBox:
+1. Wait for the status LED to blink blue. The normal boot and Sofia hardware
+   warmup can take about one minute.
+2. Join `IDS7938XXXX`, where `XXXX` is the last four characters of the WiBox
+   Device ID.
+3. Use the full 12-character Device ID printed on the WiBox label as the access
+   point password.
+4. Open `http://192.168.111.1/` in a browser. Disable mobile data temporarily if
+   the phone avoids WiFi networks without Internet access.
+5. Enter the destination network name and WPA/WPA2 password, then select
+   **Save and restart**.
+6. The LED turns green briefly, the access point disappears and the WiBox
+   restarts in station mode. Find its new address in the router's DHCP leases.
+   Dropbear SSH starts after the network transition.
+
+### Reconfigure an installed WiBox
+
+Hold the physical WiFi button for at least five seconds. When the request is
+accepted, the WiFi LED turns off and the WiBox reboots into the same provisioning
+access point. The existing credentials are preserved until **Save and restart**
+successfully replaces them. **Return to saved Wi-Fi** leaves them unchanged and
+restarts in station mode.
+
+An unavailable router or an incorrect saved password does not automatically
+force AP mode or a reboot. The WiBox stays in station mode and retries
+association and DHCP; this avoids stranding a working installation after a
+temporary router outage. Use the physical button when you intentionally need
+to reconfigure it.
+
+### Optional manual configuration
+
+For a preconfigured first boot or serial recovery, create
+`/mnt/mtd/wpa_supplicant.conf` on the WiBox:
 
 ```ini
 ctrl_interface=/var/run/wpa_supplicant

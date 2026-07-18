@@ -71,17 +71,19 @@ Ethernet is configured as:
 eth0 192.168.1.10/24
 ```
 
-WiFi station configuration should be persisted before flashing:
+WiFi station configuration is persisted at:
 
 ```text
 /mnt/mtd/wpa_supplicant.conf
 ```
 
-If this file is missing, the firmware starts the provisioning AP at
-`192.168.111.1`. A configured but unavailable station is retried indefinitely
-without rebooting. Holding the physical WiFi button for at least five seconds
-persists `/mnt/mtd/wifi_ap_requested` and reboots into AP mode while preserving
-the saved station credentials.
+If this file is missing, the firmware starts the identity-derived
+`IDS7938XXXX` provisioning AP at `192.168.111.1`; its password is the full
+12-character Device ID printed on the WiBox label. A configured but unavailable
+station is retried indefinitely without rebooting or automatically entering AP
+mode. Holding the physical WiFi button for at least five seconds persists
+`/mnt/mtd/wifi_ap_requested` and reboots into AP mode while preserving the saved
+station credentials.
 
 ## Serial Devices
 
