@@ -18,17 +18,19 @@ show_success_led() {
 
 html_error() {
     printf 'Status: 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n'
-    printf '<!doctype html><meta charset="utf-8"><title>Error</title><h1>No se pudo guardar</h1><p>%s</p><p><a href="/">Volver</a></p>\n' "$1"
+    printf '<!doctype html><html lang="en"><meta charset="utf-8"><title>Error</title><h1>Unable to continue</h1><p>%s</p><p><a href="/">Go back</a></p></html>\n' "$1"
     exit 0
 }
 
 length=${CONTENT_LENGTH:-0}
 case "$length" in
-    ''|*[!0-9]*) html_error 'Solicitud no válida.' ;;
+    ''|*[!0-9]*) html_error 'Invalid request.' ;;
 esac
-[ "$length" -le "$MAX_BODY" ] || html_error 'La solicitud es demasiado grande.'
+[ "$length" -le "$MAX_BODY" ] || html_error 'The request is too large.'
 
-body=$(dd if=/dev/stdin bs=1 count="$length" 2>/dev/null || true)
+# BusyBox httpd provides the POST body on standard input but this target does
+# not expose /dev/stdin. Let dd consume its inherited stdin directly.
+body=$(dd bs=1 count="$length" 2>/dev/null || true)
 
 raw_param() {
     key=$1
@@ -50,28 +52,28 @@ action=$(url_decode "$(raw_param action)")
 [ -n "$action" ] || action=save
 
 if [ "$action" = "cancel" ]; then
-    [ -f "$CONFIG_PATH" ] || html_error 'No existe una configuración Wi‑Fi guardada.'
+    [ -f "$CONFIG_PATH" ] || html_error 'No saved Wi-Fi configuration exists.'
     rm -f "$AP_REQUEST_PATH"
     sync
     show_success_led
     printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
-    printf '<!doctype html><meta charset="utf-8"><title>Volviendo a Wi‑Fi</title><h1>Volviendo a la red guardada</h1><p>El WiBox se reiniciará en modo estación.</p>\n'
+    printf '<!doctype html><html lang="en"><meta charset="utf-8"><title>Returning to Wi-Fi</title><h1>Returning to the saved network</h1><p>WiBox will restart in station mode.</p></html>\n'
     (sleep "$REBOOT_DELAY"; "$REBOOT_COMMAND") >/dev/null 2>&1 &
     exit 0
 fi
-[ "$action" = "save" ] || html_error 'Acción no válida.'
+[ "$action" = "save" ] || html_error 'Invalid action.'
 
 ssid=$(url_decode "$(raw_param ssid)")
 psk=$(url_decode "$(raw_param psk)")
 
 ssid_bytes=$(printf '%s' "$ssid" | wc -c | tr -d ' ')
 psk_bytes=$(printf '%s' "$psk" | wc -c | tr -d ' ')
-[ "$ssid_bytes" -ge 1 ] && [ "$ssid_bytes" -le 32 ] || html_error 'El SSID debe tener entre 1 y 32 bytes.'
-[ "$psk_bytes" -ge 8 ] && [ "$psk_bytes" -le 63 ] || html_error 'La contraseña debe tener entre 8 y 63 bytes.'
+[ "$ssid_bytes" -ge 1 ] && [ "$ssid_bytes" -le 32 ] || html_error 'The SSID must be between 1 and 32 bytes.'
+[ "$psk_bytes" -ge 8 ] && [ "$psk_bytes" -le 63 ] || html_error 'The password must be between 8 and 63 bytes.'
 
 # Newlines/control bytes must never enter the quoted WPA configuration.
 if printf '%s%s' "$ssid" "$psk" | LC_ALL=C grep -q '[[:cntrl:]]'; then
-    html_error 'La red o la contraseña contiene caracteres no permitidos.'
+    html_error 'The network name or password contains unsupported characters.'
 fi
 
 escape_wpa() {
@@ -92,12 +94,12 @@ mkdir -p "$(dirname "$CONFIG_PATH")"
     printf '%s\n' '        scan_ssid=1'
     printf '%s\n' '        key_mgmt=WPA-PSK'
     printf '%s\n' '}'
-} > "$tmp" || html_error 'No se pudo escribir la configuración.'
-mv "$tmp" "$CONFIG_PATH" || html_error 'No se pudo activar la configuración.'
+} > "$tmp" || html_error 'Unable to write the configuration.'
+mv "$tmp" "$CONFIG_PATH" || html_error 'Unable to activate the configuration.'
 rm -f "$AP_REQUEST_PATH"
 sync
 show_success_led
 
 printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
-printf '<!doctype html><meta charset="utf-8"><title>Wi‑Fi guardada</title><h1>Configuración guardada</h1><p>El WiBox se reiniciará y se conectará a la red indicada.</p>\n'
+printf '<!doctype html><html lang="en"><meta charset="utf-8"><title>Wi-Fi saved</title><h1>Configuration saved</h1><p>WiBox will restart and connect to the selected network.</p></html>\n'
 (sleep "$REBOOT_DELAY"; "$REBOOT_COMMAND") >/dev/null 2>&1 &

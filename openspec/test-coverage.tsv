@@ -81,6 +81,7 @@ intercom-uart	Raw and decoded input events	An unknown frame arrives	host.uart,ho
 intercom-uart	Call-related frame handling	Physical handset is answered	host.uart,host.call-flow,host.sip-media,contract.runtime
 intercom-uart	Non-call telemetry	The physical forward button changes	host.uart,host.mqtt,device.media
 intercom-uart	Physical WiFi provisioning control	WiFi button is held for five seconds	host.uart,host.sip-media,contract.runtime,device.network
+intercom-uart	Physical WiFi provisioning control	Long-press completion arrives without its first stage	host.uart,host.sip-media,contract.runtime
 intercom-uart	Reopen guard	A guarded reopen is requested	host.call-flow,contract.runtime,device.media
 mqtt-home-assistant	Native MQTT client	MQTT is enabled	host.mqtt
 mqtt-home-assistant	Stable topic identity	Identity overrides are empty	host.mqtt,host.config
@@ -94,6 +95,7 @@ mqtt-home-assistant	Legacy retained cleanup	Firmware upgrades from a legacy rele
 network-services	Administrative SSH	Custom firmware boots normally	contract.runtime,device.network
 network-services	Administrative SSH	WiBox enters AP provisioning mode	host.wifi,contract.runtime,device.network
 network-services	AP provisioning portal	User saves new WiFi credentials	host.wifi,contract.image,device.network
+network-services	AP provisioning portal	User opens the provisioning portal	host.wifi,contract.image,device.network
 network-services	AP provisioning portal	User cancels forced AP mode	host.wifi,contract.image,device.network
 network-services	AP provisioning portal	Device is in normal station mode	host.wifi,contract.runtime,device.network
 network-services	SIP and RTP endpoints	Video is disabled	host.sip-sdp,host.call-flow,device.network

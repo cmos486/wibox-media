@@ -74,18 +74,29 @@ reset and long-down frames SHALL remain observable without adding values to
 
 ### Requirement: Physical WiFi provisioning control
 
-`STA_TO_AP` (`FB 21 00 2C`) SHALL be recognized as a known incoming frame. On
-receipt, the daemon SHALL persist `/mnt/mtd/wifi_ap_requested`, preserve the
-current station configuration, sync storage and request a controlled reboot.
+The observed GK7102S WiFi button emits `CMD_DOWN_LONG_1` (`FB 24 01 30`)
+followed by `CMD_DOWN_LONG_2` (`FB 24 02 31`) about three seconds later. The
+daemon SHALL require both stages in order within ten seconds before persisting
+`/mnt/mtd/wifi_ap_requested`, preserving the current station configuration,
+syncing storage and requesting a controlled reboot. A stage-2 frame alone SHALL
+have no provisioning side effect. The legacy direct `STA_TO_AP`
+(`FB 21 00 2C`) frame SHALL remain supported for compatible MCU revisions.
 
 #### Scenario: WiFi button is held for five seconds
 
 - GIVEN the daemon owns the intercom UART
-- WHEN `STA_TO_AP` is received
+- WHEN `CMD_DOWN_LONG_1` is followed by `CMD_DOWN_LONG_2` within ten seconds
 - THEN a known `sta_to_ap` UART event is published
 - AND the AP-request marker is persisted
 - AND the current station credentials are not deleted
 - AND the device reboots toward AP provisioning mode
+
+#### Scenario: Long-press completion arrives without its first stage
+
+- GIVEN no recent `CMD_DOWN_LONG_1` was received
+- WHEN `CMD_DOWN_LONG_2` arrives
+- THEN no AP-request marker is created
+- AND the device does not reboot
 
 ### Requirement: Reopen guard
 

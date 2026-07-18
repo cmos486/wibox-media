@@ -64,6 +64,8 @@ def check_call_wiring():
     for token in ("UART_CODE_ALARM_REPORT", "UART_CODE_HANG_UP_0",
                   "UART_CODE_HANG_UP_1", "UART_CODE_PHYSICAL_HANDSET_ANSWERED",
                   "UART_CODE_STA_TO_AP", "request_wifi_ap_mode",
+                  "UART_CODE_CMD_DOWN_LONG_1", "UART_CODE_CMD_DOWN_LONG_2",
+                  "WIFI_BUTTON_LONG_SEQUENCE_MAX_MS",
                   "terminate_call_from_serial", "mqtt_publish_uart_event"):
         require(token in uart, f"UART flow missing {token}")
     require("handle_ding_trigger(\"physical_panel\")" in uart,

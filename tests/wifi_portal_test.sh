@@ -135,7 +135,7 @@ printf '%s' "$body" |
     WIFI_REBOOT_COMMAND=/bin/true WIFI_REBOOT_DELAY=0 \
     WIFI_GPIO_SCRIPT="$TEST_DIR/mock-gpio.sh" "$CGI" >"$TEST_DIR/response"
 
-grep -q 'Configuración guardada' "$TEST_DIR/response"
+grep -q 'Configuration saved' "$TEST_DIR/response"
 grep -q '^        ssid="Vecino WiFi"$' "$CONFIG"
 grep -q '^        psk="secreto123"$' "$CONFIG"
 [ ! -f "$MARKER" ]
@@ -150,7 +150,7 @@ printf '%s' "$cancel" |
     CONTENT_LENGTH=${#cancel} WIFI_CONFIG_PATH="$CONFIG" WIFI_AP_REQUEST_PATH="$MARKER" \
     WIFI_REBOOT_COMMAND=/bin/true WIFI_REBOOT_DELAY=0 \
     WIFI_GPIO_SCRIPT="$TEST_DIR/mock-gpio.sh" "$CGI" >"$TEST_DIR/cancel-response"
-grep -q 'Volviendo a la red guardada' "$TEST_DIR/cancel-response"
+grep -q 'Returning to the saved network' "$TEST_DIR/cancel-response"
 [ "$(sha256sum "$CONFIG" | cut -d' ' -f1)" = "$CONFIG_HASH" ]
 [ ! -f "$MARKER" ]
 tail -2 "$MOCK_LED_LOG" | grep -q '^stop$'
@@ -165,11 +165,15 @@ invalid='action=save&ssid=x&psk=short'
 if printf '%s' "$invalid" |
     CONTENT_LENGTH=${#invalid} WIFI_CONFIG_PATH="$TEST_DIR/invalid.conf" \
     WIFI_AP_REQUEST_PATH="$MARKER" WIFI_REBOOT_COMMAND=/bin/true "$CGI" |
-    grep -q 'entre 8 y 63'; then
+    grep -q 'between 8 and 63'; then
     :
 else
     echo "short WPA key was accepted" >&2
     exit 1
 fi
+
+! grep -q 'if=/dev/stdin' "$CGI"
+! grep -qiE 'configurar|contraseña|guardar|volver|reiniciará|solicitud|acción' \
+    "$ROOT/include/www/wifi/index.html" "$CGI"
 
 echo "Wi-Fi mode, station retry and provisioning portal tests passed"

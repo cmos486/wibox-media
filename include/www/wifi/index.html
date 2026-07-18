@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Configurar Wi‑Fi · WiBox</title>
+  <title>Wi-Fi Setup · WiBox</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui,sans-serif; }
     body { max-width: 32rem; margin: 3rem auto; padding: 0 1rem; }
@@ -15,20 +15,20 @@
   </style>
 </head>
 <body>
-  <h1>Configurar Wi‑Fi</h1>
-  <p>Introduce la red a la que debe conectarse el WiBox después de reiniciar.</p>
+  <h1>Wi-Fi Setup</h1>
+  <p>Enter the network that WiBox should connect to after restarting.</p>
   <form method="post" action="/cgi-bin/wifi-config.cgi">
-    <label>Nombre de la red (SSID)
+    <label>Network name (SSID)
       <input name="ssid" maxlength="32" required autocomplete="off">
     </label>
-    <label>Contraseña WPA/WPA2
+    <label>WPA/WPA2 password
       <input name="psk" type="password" minlength="8" maxlength="63" required autocomplete="off">
     </label>
-    <button type="submit" name="action" value="save">Guardar y reiniciar</button>
+    <button type="submit" name="action" value="save">Save and restart</button>
   </form>
   <form method="post" action="/cgi-bin/wifi-config.cgi">
-    <button type="submit" name="action" value="cancel" formnovalidate>Volver a la Wi‑Fi guardada</button>
+    <button type="submit" name="action" value="cancel" formnovalidate>Return to saved Wi-Fi</button>
   </form>
-  <p><small>Tras guardar, el AP desaparecerá y el WiBox intentará conectarse a esta red.</small></p>
+  <p><small>After saving, the access point will disappear and WiBox will try to connect to this network.</small></p>
 </body>
 </html>

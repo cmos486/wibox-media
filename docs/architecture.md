@@ -27,8 +27,10 @@ call.
 Station credentials select station mode even when the router is temporarily
 unavailable. The station manager retries without rebooting and restarts network
 consumers after a later lease. Missing credentials or the persistent
-`wifi_ap_requested` marker select AP mode. `STA_TO_AP` from the physical WiFi
-button creates that marker; saving or cancelling in the portal clears it.
+`wifi_ap_requested` marker selects AP mode. The physical WiFi button's observed
+`CMD_DOWN_LONG_1`/`CMD_DOWN_LONG_2` sequence creates that marker; saving or
+cancelling in the portal clears it. The legacy direct `STA_TO_AP` frame remains
+supported for compatible MCU revisions.
 
 ## Runtime Ownership
 

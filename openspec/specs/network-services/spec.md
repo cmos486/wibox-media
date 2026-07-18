@@ -30,12 +30,19 @@ authentication and persistent host keys under `/mnt/mtd/dropbear`.
 
 The firmware SHALL serve a provisioning UI on TCP 80 at
 `http://192.168.111.1/` only while `ap_start.sh` owns the WiFi interface. The
-portal SHALL validate SSID and WPA/WPA2 credentials, atomically replace
+portal SHALL be presented entirely in English, read the BusyBox HTTP POST body
+directly from standard input, validate SSID and WPA/WPA2 credentials, atomically replace
 `/mnt/mtd/wpa_supplicant.conf`, clear the AP-request marker and reboot. When a
 saved station configuration exists, the portal SHALL also allow cancelling AP
 mode without changing those credentials. AP availability SHALL be indicated by
 a slow blue blink; an accepted Save or Cancel SHALL stop that blink and show
 green before reboot.
+
+#### Scenario: User opens the provisioning portal
+
+- GIVEN the WiBox is in AP provisioning mode
+- WHEN the user opens `http://192.168.111.1/`
+- THEN all user-facing setup, validation and result text is in English
 
 #### Scenario: User saves new WiFi credentials
 
