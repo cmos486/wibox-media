@@ -6,6 +6,7 @@ echo "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
 
 source /usr/bin/gpio.sh
 setup_all_gpio
+wifi_led_blink_stop
 wifi_led red
 
 ifconfig eth0 up
@@ -148,5 +149,8 @@ fi
 
 # remove lock if present
 rm -f /tmp/heartbeat.lock
+touch /tmp/wibox-production-ready
 
-wifi_led blue
+if [ "$WIFI_MODE" = "station" ]; then
+  wifi_led blue
+fi

@@ -33,7 +33,9 @@ The firmware SHALL serve a provisioning UI on TCP 80 at
 portal SHALL validate SSID and WPA/WPA2 credentials, atomically replace
 `/mnt/mtd/wpa_supplicant.conf`, clear the AP-request marker and reboot. When a
 saved station configuration exists, the portal SHALL also allow cancelling AP
-mode without changing those credentials.
+mode without changing those credentials. AP availability SHALL be indicated by
+a slow blue blink; an accepted Save or Cancel SHALL stop that blink and show
+green before reboot.
 
 #### Scenario: User saves new WiFi credentials
 
@@ -41,6 +43,7 @@ mode without changing those credentials.
 - WHEN valid SSID and WPA/WPA2 credentials are submitted
 - THEN the persistent station configuration is atomically replaced
 - AND the AP-request marker is cleared
+- AND the status LED changes from blinking blue to green
 - AND the WiBox reboots into station mode
 
 #### Scenario: User cancels forced AP mode
@@ -50,6 +53,7 @@ mode without changing those credentials.
 - WHEN the user chooses to return to the saved network
 - THEN the saved credentials remain unchanged
 - AND the AP-request marker is cleared
+- AND the status LED changes from blinking blue to green
 - AND the WiBox reboots into station mode
 
 #### Scenario: Device is in normal station mode

@@ -103,7 +103,8 @@ case "$MODE" in
             ! pgrep httpd >/dev/null
         '
         confirm "Con el router temporalmente apagado el WiBox no reinicia ni crea AP y conecta solo cuando vuelve"
-        confirm "Mantener el boton WiFi 5 segundos crea IDS7938XXXX, DHCP, web y SSH en 192.168.111.1"
+        confirm "Mantener el boton WiFi 5 segundos crea IDS7938XXXX, DHCP, web y SSH en 192.168.111.1 con LED azul intermitente"
+        confirm "Guardar o cancelar cambia el LED de azul intermitente a verde antes de reiniciar"
         confirm "Cancelar el AP desde la web conserva las credenciales y devuelve el WiBox a la red guardada"
         confirm "Guardar otra red desde la web reemplaza el fichero, elimina el marcador AP y arranca en estacion"
         confirm "SSH, SIP/RTP, RTSP, Prometheus y MQTT solo son accesibles desde las redes de confianza previstas"

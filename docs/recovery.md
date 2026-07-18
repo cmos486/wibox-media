@@ -61,6 +61,7 @@ button for at least five seconds. The WiBox reboots into its provisioning AP;
 connect to it and open `http://192.168.111.1/` to replace the credentials or
 return to the saved network. Serial can still repair
 `/mnt/mtd/wpa_supplicant.conf` directly when required.
+The status LED blinks blue for as long as this provisioning AP is active.
 
 If you cannot transfer a known-good image into `/tmp/update.img`, use U-Boot
 recovery instead.

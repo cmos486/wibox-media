@@ -73,6 +73,8 @@ to AP. Hold the physical WiFi button for at least five seconds to force the
 provisioning AP. This preserves the saved credentials; the web page can either
 replace them or cancel AP mode and return to the saved network. Dropbear is
 restarted after each network transition so SSH follows the active interface.
+The status LED blinks blue while the provisioning AP and portal are available;
+it changes briefly to green when Save or Cancel is accepted.
 
 Create `/mnt/mtd/wpa_supplicant.conf` on the WiBox:
 

@@ -207,14 +207,18 @@ ring/unlock/call counters, video state and WiFi RSSI.
 
 ## LED Policy
 
-LEDs are currently owned by `run.sh`, not the daemon:
+LEDs are owned by the boot and network-mode scripts, not the daemon:
 
 ```text
-red    booting or WiFi failure
+red    booting or station association/DHCP retry
 off    WiFi setup in progress
 green  WiFi associated and DHCP succeeded
-blue   production boot complete and daemon started
+blue   production station boot complete and daemon started
+blue blinking slowly  AP provisioning and web portal available
 ```
+
+An accepted portal Save or Cancel stops the AP blink and shows green until the
+controlled reboot begins.
 
 `gpio.sh` also initializes board lines that must be ready before media startup,
 including the audio chip enable line on GPIO 18.

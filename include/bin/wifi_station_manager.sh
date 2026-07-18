@@ -20,6 +20,7 @@ IFCONFIG=${WIFI_IFCONFIG:-/sbin/ifconfig}
 KILLALL=${WIFI_KILLALL:-/bin/killall}
 PIDOF=${WIFI_PIDOF:-/bin/pidof}
 SLEEP=${WIFI_SLEEP:-/bin/sleep}
+GPIO_SCRIPT=${WIFI_GPIO_SCRIPT:-/usr/bin/gpio.sh}
 
 mkdir -p "$(dirname "$LOG_PATH")"
 
@@ -39,10 +40,8 @@ log() {
 }
 
 set_wifi_led() {
-    # Once production boot is complete the normal blue runtime indication wins.
-    [ -f /tmp/heartbeat.lock ] || return 0
-    if [ -f /usr/bin/gpio.sh ]; then
-        . /usr/bin/gpio.sh
+    if [ -f "$GPIO_SCRIPT" ]; then
+        . "$GPIO_SCRIPT"
         wifi_led "$1"
     fi
 }
@@ -118,7 +117,11 @@ connect_once() {
     fi
 
     : >"$READY_PATH"
-    set_wifi_led green
+    if [ -f /tmp/wibox-production-ready ]; then
+        set_wifi_led blue
+    else
+        set_wifi_led green
+    fi
     log "station address acquired"
     restart_network_consumers
     return 0
@@ -146,6 +149,7 @@ while [ ! -f "$AP_REQUEST_PATH" ] && [ -f "$CONFIG_PATH" ]; do
             "$SLEEP" "$HEALTH_INTERVAL"
         done
         log "station connectivity lost; scheduling reconnect"
+        set_wifi_led red
         stop_station_clients
     else
         set_wifi_led red

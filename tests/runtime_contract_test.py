@@ -109,6 +109,17 @@ def check_boot_and_release_contracts():
     require("ap_start.sh" not in wifi_manager, "station failure can enter AP mode")
     require("reboot" not in wifi_manager and "reboot" not in heartbeat,
             "station recovery can reboot the device")
+    ap_start = read("include/bin/ap_start.sh")
+    gpio = read("include/bin/gpio.sh")
+    portal_cgi = read("include/www/wifi/cgi-bin/wifi-config.cgi")
+    require("wifi_led_blink_start blue" in ap_start,
+            "AP mode does not expose a persistent physical indication")
+    require("wifi_led_blink_start" in gpio and "wifi_led_blink_stop" in gpio,
+            "GPIO runtime does not manage the AP blink lifecycle")
+    require("wifi_led_blink_stop" in portal_cgi and "wifi_led green" in portal_cgi,
+            "portal success does not acknowledge Save/Cancel before reboot")
+    require("station connectivity lost; scheduling reconnect\"\n        set_wifi_led red" in wifi_manager,
+            "runtime station loss is not indicated in red")
 
     watchdog = read("include/bin/app_watchdog.sh")
     for token in ("WIBOX_OTA_GUARD_PATH", '"PREPARE"', "wait_for_ota_guard",

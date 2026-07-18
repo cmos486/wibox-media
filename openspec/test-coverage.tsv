@@ -20,6 +20,8 @@ boot-and-runtime	Deterministic WiFi mode selection	No station credentials exist	
 boot-and-runtime	Station retry without reboot	Configured router is temporarily unavailable	host.wifi,contract.runtime,device.network
 boot-and-runtime	Station retry without reboot	Router becomes available after startup	host.wifi,contract.runtime,device.network
 boot-and-runtime	Boot status indication	Production startup completes	contract.runtime,device.core
+boot-and-runtime	Boot status indication	AP provisioning is available	host.wifi,contract.runtime,device.network
+boot-and-runtime	Boot status indication	Configured station is unavailable after startup	host.wifi,contract.runtime,device.network
 boot-and-runtime	Local boot extension	A local post hook exists	contract.runtime,device.core
 build-and-release	Pinned build environment	A contributor builds firmware	contract.runtime,contract.image
 build-and-release	Host regression suite	Host CI runs	host.coverage,contract.runtime

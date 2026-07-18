@@ -5,7 +5,16 @@ CONFIG_PATH=${WIFI_CONFIG_PATH:-/mnt/mtd/wpa_supplicant.conf}
 AP_REQUEST_PATH=${WIFI_AP_REQUEST_PATH:-/mnt/mtd/wifi_ap_requested}
 REBOOT_COMMAND=${WIFI_REBOOT_COMMAND:-/sbin/reboot}
 REBOOT_DELAY=${WIFI_REBOOT_DELAY:-1}
+GPIO_SCRIPT=${WIFI_GPIO_SCRIPT:-/usr/bin/gpio.sh}
 MAX_BODY=4096
+
+show_success_led() {
+    if [ -f "$GPIO_SCRIPT" ]; then
+        . "$GPIO_SCRIPT"
+        wifi_led_blink_stop
+        wifi_led green
+    fi
+}
 
 html_error() {
     printf 'Status: 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n'
@@ -44,6 +53,7 @@ if [ "$action" = "cancel" ]; then
     [ -f "$CONFIG_PATH" ] || html_error 'No existe una configuración Wi‑Fi guardada.'
     rm -f "$AP_REQUEST_PATH"
     sync
+    show_success_led
     printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
     printf '<!doctype html><meta charset="utf-8"><title>Volviendo a Wi‑Fi</title><h1>Volviendo a la red guardada</h1><p>El WiBox se reiniciará en modo estación.</p>\n'
     (sleep "$REBOOT_DELAY"; "$REBOOT_COMMAND") >/dev/null 2>&1 &
@@ -86,6 +96,7 @@ mkdir -p "$(dirname "$CONFIG_PATH")"
 mv "$tmp" "$CONFIG_PATH" || html_error 'No se pudo activar la configuración.'
 rm -f "$AP_REQUEST_PATH"
 sync
+show_success_led
 
 printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
 printf '<!doctype html><meta charset="utf-8"><title>Wi‑Fi guardada</title><h1>Configuración guardada</h1><p>El WiBox se reiniciará y se conectará a la red indicada.</p>\n'

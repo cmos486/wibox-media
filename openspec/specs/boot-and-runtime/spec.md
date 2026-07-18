@@ -102,15 +102,31 @@ daemon when necessary so it binds the acquired address.
 
 ### Requirement: Boot status indication
 
-The boot scripts SHALL use red for boot or WiFi failure, off while WiFi setup is
-in progress, green after successful association/DHCP and blue after production
-startup completes.
+The network scripts SHALL use red for boot or station retry, off while WiFi
+setup is in progress, green after successful association/DHCP during boot and
+blue after production station startup completes. While AP provisioning is
+available, the blue LED SHALL blink slowly instead of remaining solid. An
+accepted portal Save or Cancel action SHALL stop the blink and show green before
+the controlled reboot.
 
 #### Scenario: Production startup completes
 
 - GIVEN the daemon has been launched
 - WHEN boot removes the heartbeat lock
 - THEN the status LED becomes blue
+
+#### Scenario: AP provisioning is available
+
+- GIVEN the provisioning AP and portal are running
+- WHEN production startup completes
+- THEN the blue status LED continues blinking until Save or Cancel is accepted
+
+#### Scenario: Configured station is unavailable after startup
+
+- GIVEN production station startup previously completed
+- WHEN association or DHCP must be retried
+- THEN the status LED becomes red
+- AND it returns to solid blue after a station address is recovered
 
 ### Requirement: Local boot extension
 
