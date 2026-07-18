@@ -51,6 +51,8 @@ require_file "bin/app_watchdog.sh"
 require_file "etc/sip_media.conf.default"
 require_file "etc/wibox-release"
 require_file "run.sh"
+require_file "bin/wifi_mode.sh"
+require_file "bin/wifi_station_manager.sh"
 require_file "bin/wifi_portal_start.sh"
 require_file "www/wifi/index.html"
 require_file "www/wifi/cgi-bin/wifi-config.cgi"
@@ -70,6 +72,11 @@ if ! grep -q "wibox-media-daemon" "${ROOT}/run.sh"; then
 fi
 if ! grep -q "Sofia_temp.sh" "${ROOT}/run.sh"; then
   echo "[!] run.sh does not contain Sofia warmup" >&2
+  exit 8
+fi
+if grep -q "timeout -t 150" "${ROOT}/run.sh" ||
+   grep -q "reboot" "${ROOT}/bin/wifi_station_manager.sh" "${ROOT}/bin/heartbeat.sh"; then
+  echo "[!] WiFi recovery must use bounded retries without reboot" >&2
   exit 8
 fi
 if ! grep -q "^video_enabled=0" "${ROOT}/etc/sip_media.conf.default"; then

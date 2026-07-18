@@ -72,6 +72,21 @@ reset and long-down frames SHALL remain observable without adding values to
 - THEN the MQTT call-forward switch reflects the physical state
 - AND no ring is generated
 
+### Requirement: Physical WiFi provisioning control
+
+`STA_TO_AP` (`FB 21 00 2C`) SHALL be recognized as a known incoming frame. On
+receipt, the daemon SHALL persist `/mnt/mtd/wifi_ap_requested`, preserve the
+current station configuration, sync storage and request a controlled reboot.
+
+#### Scenario: WiFi button is held for five seconds
+
+- GIVEN the daemon owns the intercom UART
+- WHEN `STA_TO_AP` is received
+- THEN a known `sta_to_ap` UART event is published
+- AND the AP-request marker is persisted
+- AND the current station credentials are not deleted
+- AND the device reboots toward AP provisioning mode
+
 ### Requirement: Reopen guard
 
 `intercom_reopen_guard_ms` SHALL default to zero. When configured above zero,

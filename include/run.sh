@@ -54,25 +54,14 @@ UDID=$(dd if=/dev/mtdblock6 skip=324 count=12 bs=1 2>/dev/null)
 [ -z "${UDID}" ] && UDID="000000000000"
 echo "IDS7938${UDID:8:4}" > /proc/sys/kernel/hostname
 
-#wifi
+# Prepare writable WiFi runtime files. Final network mode is selected after
+# Sofia warmup because Sofia can disrupt wlan0.
 cp /usr/sbin/wifi_conf/* /var/wifi/
 cp /usr/sbin/hostapd.conf /var/wifi
-
-rm -rf /var/run/wpa_supplicant
-mkdir -p /var/run/wpa_supplicant
-
-WPA_CONF="/var/wifi/wpa_supplicant.conf"
-# WARNING: If file does not exist in persistent partition,
-# Wibox cannot connect to Wireless AP! Ensure to create it.
-[ -f "/mnt/mtd/wpa_supplicant.conf" ] && WPA_CONF="/mnt/mtd/wpa_supplicant.conf"
 
 wifi_led off
 
 ln -s /mnt/mtd/Config/resolv.conf /var/resolv.conf
-wpa_supplicant -i wlan0 -c ${WPA_CONF} -B
-timeout -t 150 udhcpc -i wlan0 -s /var/wifi/udhcpc.conf
-
-[ "$?" = 0 ] && wifi_led green || wifi_led red
 
 # increase network buffer
 echo 1084576 > /proc/sys/net/core/rmem_max
@@ -104,17 +93,20 @@ RUN_SOFIA=$(strings /dev/mtdblock1 | grep -E "^sofia=" | cut -d '=' -f2)
 
 if [ -z "${RUN_SOFIA}" ] || [ "${RUN_SOFIA}" != "0" ]; then
   timeout -t 180 /usr/bin/Sofia_temp.sh
-  # sofia does not have Wifi connection and we just got dropped from wifi
-  # re-run wifi setup again
-  killall wpa_supplicant udhcpc
+fi
+
+WIFI_MODE=$(/usr/bin/wifi_mode.sh)
+if [ "$WIFI_MODE" = "ap" ]; then
   wifi_led off
-  if grep -q ssid ${WPA_CONF}; then
-    wpa_supplicant -i wlan0 -c ${WPA_CONF} -B
-    timeout -t 150 udhcpc -i wlan0 -s /var/wifi/udhcpc.conf
-    [ "$?" = 0 ] && wifi_led green || (wifi_led off; /usr/bin/ap_start.sh)
-  else
-    /usr/bin/ap_start.sh
-  fi
+  /usr/bin/ap_start.sh
+else
+  rm -f /tmp/wifi-station-ready
+  /usr/bin/wifi_station_manager.sh &
+  WIFI_WAIT=0
+  while [ "$WIFI_WAIT" -lt 35 ] && [ ! -f /tmp/wifi-station-ready ]; do
+    sleep 1
+    WIFI_WAIT=$((WIFI_WAIT + 1))
+  done
 fi
 
 # Sofia_temp loads a watchdog configuration only during hardware warmup and

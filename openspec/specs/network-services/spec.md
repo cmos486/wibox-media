@@ -19,6 +19,45 @@ authentication and persistent host keys under `/mnt/mtd/dropbear`.
 - THEN SSH becomes available
 - AND temporary boot telnet is stopped
 
+#### Scenario: WiBox enters AP provisioning mode
+
+- GIVEN Dropbear started before final WiFi configuration
+- WHEN the AP interface and address are established
+- THEN Dropbear is restarted
+- AND SSH is reachable through `192.168.111.1`
+
+### Requirement: AP provisioning portal
+
+The firmware SHALL serve a provisioning UI on TCP 80 at
+`http://192.168.111.1/` only while `ap_start.sh` owns the WiFi interface. The
+portal SHALL validate SSID and WPA/WPA2 credentials, atomically replace
+`/mnt/mtd/wpa_supplicant.conf`, clear the AP-request marker and reboot. When a
+saved station configuration exists, the portal SHALL also allow cancelling AP
+mode without changing those credentials.
+
+#### Scenario: User saves new WiFi credentials
+
+- GIVEN the WiBox is in AP provisioning mode
+- WHEN valid SSID and WPA/WPA2 credentials are submitted
+- THEN the persistent station configuration is atomically replaced
+- AND the AP-request marker is cleared
+- AND the WiBox reboots into station mode
+
+#### Scenario: User cancels forced AP mode
+
+- GIVEN the AP was explicitly requested
+- AND a saved station configuration exists
+- WHEN the user chooses to return to the saved network
+- THEN the saved credentials remain unchanged
+- AND the AP-request marker is cleared
+- AND the WiBox reboots into station mode
+
+#### Scenario: Device is in normal station mode
+
+- GIVEN the WiBox has a station lease
+- WHEN LAN services are inspected
+- THEN the provisioning HTTP server is not running
+
 ### Requirement: SIP and RTP endpoints
 
 The daemon SHALL listen for SIP on configurable UDP port 5060 by default and use

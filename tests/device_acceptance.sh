@@ -84,7 +84,7 @@ case "$MODE" in
         ;;
     install)
         confirm "Se creo y verifico el backup factory antes del primer flash"
-        confirm "WiFi persistente y acceso de recovery se validaron antes de escribir mtd4"
+        confirm "WiFi persistente o provisioning AP y acceso de recovery se validaron antes de escribir mtd4"
         confirm "La imagen transferida respeto el tamano de particion y arranco con SSH"
         core_checks
         echo "device.install PASS"
@@ -92,10 +92,20 @@ case "$MODE" in
     network)
         core_checks
         remote '
+            test -x /usr/bin/wifi_mode.sh &&
+            test -x /usr/bin/wifi_station_manager.sh &&
+            test -x /usr/bin/wifi_portal_start.sh &&
             grep -q "^sip_port=" /mnt/mtd/sip_media.conf &&
             grep -q "^rtsp_port=" /mnt/mtd/sip_media.conf &&
-            grep -q "^prometheus_port=" /mnt/mtd/sip_media.conf
+            grep -q "^prometheus_port=" /mnt/mtd/sip_media.conf &&
+            test ! -e /mnt/mtd/wifi_ap_requested &&
+            ! pgrep hostapd >/dev/null &&
+            ! pgrep httpd >/dev/null
         '
+        confirm "Con el router temporalmente apagado el WiBox no reinicia ni crea AP y conecta solo cuando vuelve"
+        confirm "Mantener el boton WiFi 5 segundos crea IDS7938XXXX, DHCP, web y SSH en 192.168.111.1"
+        confirm "Cancelar el AP desde la web conserva las credenciales y devuelve el WiBox a la red guardada"
+        confirm "Guardar otra red desde la web reemplaza el fichero, elimina el marcador AP y arranca en estacion"
         confirm "SSH, SIP/RTP, RTSP, Prometheus y MQTT solo son accesibles desde las redes de confianza previstas"
         echo "device.network PASS"
         ;;

@@ -45,7 +45,7 @@ test: test-mqtt test-call-flow test-call-session-edge test-config \
 	test-prometheus test-rtsp test-audio-hw test-video-worker \
 	test-h264-annexb test-snapshot-file test-firmware-update \
 	test-hardware-watchdog test-app-watchdog test-runtime-contract \
-	test-spec-coverage test-device-contract test-watchdog
+	test-spec-coverage test-device-contract test-watchdog test-wifi-portal
 
 test-mqtt:
 	tests/mqtt_native_mock.py

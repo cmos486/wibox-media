@@ -63,6 +63,7 @@ def check_call_wiring():
     uart = function_body(source, "handle_uart_frame")
     for token in ("UART_CODE_ALARM_REPORT", "UART_CODE_HANG_UP_0",
                   "UART_CODE_HANG_UP_1", "UART_CODE_PHYSICAL_HANDSET_ANSWERED",
+                  "UART_CODE_STA_TO_AP", "request_wifi_ap_mode",
                   "terminate_call_from_serial", "mqtt_publish_uart_event"):
         require(token in uart, f"UART flow missing {token}")
     require("handle_ding_trigger(\"physical_panel\")" in uart,
@@ -98,9 +99,16 @@ def check_boot_and_release_contracts():
     require(len(sofia_commands) == 1, "Sofia warmup must execute exactly once")
     require(boot.count("app_watchdog.sh wibox-media-daemon") == 1,
             "production daemon supervisor is not singular")
-    for token in ("/mnt/mtd/sip_media.conf", "wpa_supplicant", "udhcpc",
+    for token in ("/mnt/mtd/sip_media.conf", "wifi_mode.sh", "wifi_station_manager.sh",
                   "nowayout=0", "soft_noboot=0", "/mnt/mtd/post.sh", "wifi_led blue"):
         require(token in boot, f"boot contract missing {token}")
+    require("timeout -t 150" not in boot, "boot retains the legacy WiFi timeout")
+
+    wifi_manager = read("include/bin/wifi_station_manager.sh")
+    heartbeat = read("include/bin/heartbeat.sh")
+    require("ap_start.sh" not in wifi_manager, "station failure can enter AP mode")
+    require("reboot" not in wifi_manager and "reboot" not in heartbeat,
+            "station recovery can reboot the device")
 
     watchdog = read("include/bin/app_watchdog.sh")
     for token in ("WIBOX_OTA_GUARD_PATH", '"PREPARE"', "wait_for_ota_guard",

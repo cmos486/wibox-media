@@ -14,6 +14,7 @@ int main(void)
 {
     static const unsigned char frames[][4] = {
         {0xFB, 0x11, 0x00, 0x1C}, {0xFB, 0x20, 0x00, 0x2B},
+        {0xFB, 0x21, 0x00, 0x2C},
         {0xFB, 0x14, 0x01, 0x20}, {0xFB, 0x13, 0x00, 0x1E},
         {0xFB, 0x13, 0x01, 0x1F}, {0xFB, 0x23, 0x00, 0x2E},
         {0xFB, 0x19, 0x00, 0x24}, {0xFB, 0x19, 0x01, 0x25},
@@ -39,9 +40,9 @@ int main(void)
     CHECK(uart_protocol_parse_control_frame("UART FB 11 00 1C", parsed) == 0);
     CHECK(memcmp(parsed, frames[0], 4) == 0);
     CHECK(uart_protocol_parse_control_frame("UART:0xFB-0X23-00-2e", parsed) == 0);
-    CHECK(memcmp(parsed, frames[5], 4) == 0);
+    CHECK(memcmp(parsed, frames[6], 4) == 0);
     CHECK(uart_protocol_parse_control_frame("UART \\xFB \\x13 \\x01 \\x1F  ", parsed) == 0);
-    CHECK(memcmp(parsed, frames[4], 4) == 0);
+    CHECK(memcmp(parsed, frames[5], 4) == 0);
     CHECK(uart_protocol_parse_control_frame(NULL, parsed) == -1);
     CHECK(uart_protocol_parse_control_frame("UART FB 11 00 1C", NULL) == -1);
     CHECK(uart_protocol_parse_control_frame("NOPE FB 11 00 1C", parsed) == -1);

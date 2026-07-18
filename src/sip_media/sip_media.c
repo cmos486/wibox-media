@@ -40,6 +40,9 @@
 #define SNAPSHOT_PATH "/tmp/wibox-snapshot.jpg"
 #define SNAPSHOT_LOG_PATH "/tmp/wibox-snapshot-worker.log"
 #define AUDIO_LINE_MUTE_MAX_MS 3000
+#ifndef WIFI_AP_REQUEST_PATH
+#define WIFI_AP_REQUEST_PATH "/mnt/mtd/wifi_ap_requested"
+#endif
 
 #define RTP_PAYLOAD_DTMF 101    // Common DTMF payload type
 #define DTMF_EVENT_0     0
@@ -2205,6 +2208,31 @@ static void terminate_call_from_serial(const char* reason) {
     sip_calling_terminate_call();
 }
 
+static void request_wifi_ap_mode(void) {
+    static const char marker[] = "requested\n";
+    int fd = open(WIFI_AP_REQUEST_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+    if (fd < 0) {
+        PJ_LOG(2,(THIS_FILE, "Cannot persist AP request %s: %s",
+                  WIFI_AP_REQUEST_PATH, strerror(errno)));
+        return;
+    }
+    if (write(fd, marker, sizeof(marker) - 1) != (ssize_t)(sizeof(marker) - 1) ||
+        fsync(fd) != 0) {
+        PJ_LOG(2,(THIS_FILE, "Cannot commit AP request %s: %s",
+                  WIFI_AP_REQUEST_PATH, strerror(errno)));
+        close(fd);
+        return;
+    }
+    close(fd);
+
+    PJ_LOG(2,(THIS_FILE, "AP provisioning requested from physical WiFi button"));
+    sync();
+    if (reboot(RB_AUTOBOOT) != 0) {
+        PJ_LOG(2,(THIS_FILE, "AP provisioning reboot failed: %s", strerror(errno)));
+    }
+}
+
 static void handle_uart_frame(const unsigned char frame[4]) {
     const uart_code_def_t* def = uart_protocol_find(frame);
 
@@ -2257,6 +2285,9 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         prometheus_inc_uart_reset();
         PJ_LOG(2,(THIS_FILE, "Reset command received from panel"));
         system("sync && reboot");
+        break;
+    case UART_CODE_STA_TO_AP:
+        request_wifi_ap_mode();
         break;
     case UART_CODE_START_CALL:
         PJ_LOG(3,(THIS_FILE, "Intercom call line is active"));

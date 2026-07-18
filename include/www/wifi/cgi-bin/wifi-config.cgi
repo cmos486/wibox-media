@@ -2,6 +2,9 @@
 set -eu
 
 CONFIG_PATH=${WIFI_CONFIG_PATH:-/mnt/mtd/wpa_supplicant.conf}
+AP_REQUEST_PATH=${WIFI_AP_REQUEST_PATH:-/mnt/mtd/wifi_ap_requested}
+REBOOT_COMMAND=${WIFI_REBOOT_COMMAND:-/sbin/reboot}
+REBOOT_DELAY=${WIFI_REBOOT_DELAY:-1}
 MAX_BODY=4096
 
 html_error() {
@@ -33,6 +36,20 @@ url_decode() {
     encoded=$(printf '%s' "$1" | sed 's/+/ /g; s/%/\\x/g')
     printf '%b' "$encoded"
 }
+
+action=$(url_decode "$(raw_param action)")
+[ -n "$action" ] || action=save
+
+if [ "$action" = "cancel" ]; then
+    [ -f "$CONFIG_PATH" ] || html_error 'No existe una configuración Wi‑Fi guardada.'
+    rm -f "$AP_REQUEST_PATH"
+    sync
+    printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
+    printf '<!doctype html><meta charset="utf-8"><title>Volviendo a Wi‑Fi</title><h1>Volviendo a la red guardada</h1><p>El WiBox se reiniciará en modo estación.</p>\n'
+    (sleep "$REBOOT_DELAY"; "$REBOOT_COMMAND") >/dev/null 2>&1 &
+    exit 0
+fi
+[ "$action" = "save" ] || html_error 'Acción no válida.'
 
 ssid=$(url_decode "$(raw_param ssid)")
 psk=$(url_decode "$(raw_param psk)")
@@ -67,8 +84,9 @@ mkdir -p "$(dirname "$CONFIG_PATH")"
     printf '%s\n' '}'
 } > "$tmp" || html_error 'No se pudo escribir la configuración.'
 mv "$tmp" "$CONFIG_PATH" || html_error 'No se pudo activar la configuración.'
+rm -f "$AP_REQUEST_PATH"
 sync
 
 printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
 printf '<!doctype html><meta charset="utf-8"><title>Wi‑Fi guardada</title><h1>Configuración guardada</h1><p>El WiBox se reiniciará y se conectará a la red indicada.</p>\n'
-(sleep 1; /sbin/reboot) >/dev/null 2>&1 &
+(sleep "$REBOOT_DELAY"; "$REBOOT_COMMAND") >/dev/null 2>&1 &

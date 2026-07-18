@@ -62,16 +62,17 @@ Replace `192.168.1.100` with your computer's IP on the same network.
 
 ## 4. Configure Persistent WiFi
 
-This is required before the first custom flash. If
-`/mnt/mtd/wpa_supplicant.conf` is missing or wrong, the custom firmware can boot
-without WiFi and you will need serial to fix it.
+Creating this before the first custom flash remains recommended, but it is no
+longer required for recovery. If `/mnt/mtd/wpa_supplicant.conf` is absent, the
+firmware starts a temporary access point. Connect to the identity-derived SSID
+(`IDS7938XXXX`) and open `http://192.168.111.1/`.
 
-If the station configuration is missing or cannot associate, the firmware
-starts a temporary access point. Connect to the identity-derived SSID
-(`IDS7938XXXX`) and open `http://192.168.111.1/`. The small provisioning page
-validates the WPA/WPA2 credentials, writes `/mnt/mtd/wpa_supplicant.conf`
-atomically, and reboots the WiBox. Dropbear is restarted after AP setup so
-SSH remains available while provisioning.
+If credentials exist but the router is temporarily unavailable, the WiBox stays
+in station mode and retries association and DHCP without rebooting or switching
+to AP. Hold the physical WiFi button for at least five seconds to force the
+provisioning AP. This preserves the saved credentials; the web page can either
+replace them or cancel AP mode and return to the saved network. Dropbear is
+restarted after each network transition so SSH follows the active interface.
 
 Create `/mnt/mtd/wpa_supplicant.conf` on the WiBox:
 

@@ -24,7 +24,10 @@
     <label>Contraseña WPA/WPA2
       <input name="psk" type="password" minlength="8" maxlength="63" required autocomplete="off">
     </label>
-    <button type="submit">Guardar y reiniciar</button>
+    <button type="submit" name="action" value="save">Guardar y reiniciar</button>
+  </form>
+  <form method="post" action="/cgi-bin/wifi-config.cgi">
+    <button type="submit" name="action" value="cancel" formnovalidate>Volver a la Wi‑Fi guardada</button>
   </form>
   <p><small>Tras guardar, el AP desaparecerá y el WiBox intentará conectarse a esta red.</small></p>
 </body>

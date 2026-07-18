@@ -6,6 +6,7 @@
 static const uart_code_def_t uart_codes[] = {
     {UART_CODE_ALARM_REPORT,    "ALARM_REPORT",    "alarm_report",    {0xFB, 0x11, 0x00, 0x1C}},
     {UART_CODE_CMD_RESET,       "CMD_RESET",       "cmd_reset",       {0xFB, 0x20, 0x00, 0x2B}},
+    {UART_CODE_STA_TO_AP,       "STA_TO_AP",       "sta_to_ap",       {0xFB, 0x21, 0x00, 0x2C}},
     {UART_CODE_START_CALL,      "START_CALL",      "start_call",      {0xFB, 0x14, 0x01, 0x20}},
     {UART_CODE_HANG_UP_0,       "HANG_UP_0",       "hang_up_0",       {0xFB, 0x13, 0x00, 0x1E}},
     {UART_CODE_HANG_UP_1,       "HANG_UP_1",       "hang_up_1",       {0xFB, 0x13, 0x01, 0x1F}},

@@ -32,7 +32,7 @@ Given code `FB 20 00`, CRC last value = `B + 20 + 00` = `0x2B`.
 | `FB 19 00 24` | in/out | PUSH_STATE 0x00 | Physical call-forward state off, observed when the WiBox forward button is toggled. Also sent by Sofia `SetPushState(0)`. This is not a doorbell event. |
 | `FB 19 01 25` | in/out | PUSH_STATE 0x01 | Physical call-forward state on. Also sent by Sofia `SetPushState(1)`. The daemon sends this once on boot when serial listening is enabled. This is not a doorbell event. |
 | `FB 20 00 2B` | in | CMD_RESET | After clicking button P1 (wifi) 5 times. Triggers Sofia to delete wifi and reboot. |
-| `FB 21 00 2C` | in | STA_TO_AP | After pressing for +5s the button, triggers Sofia to reboot and start in AP mode. |
+| `FB 21 00 2C` | in | STA_TO_AP | Holding the WiFi button for +5s makes the custom daemon persist an AP request and reboot into provisioning mode without deleting the saved station configuration. |
 | `FB 23 00 2E` | in | PHYSICAL_HANDSET_ANSWERED 0x00 | Pick the call from physical intercom phone. Additional params: ch = 1 |
 | `FB 24 01 30` | in | CMD_DOWN_LONG 0x01 | Received every 5 minutes. |
 | `FB 24 02 31` | in | CMD_DOWN_LONG 0x02 | Received every 5 minutes after previous one. |

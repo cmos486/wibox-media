@@ -11,9 +11,11 @@ This is the current production shape of the custom WiBox image.
   -> /usr/run.sh
        -> GPIO and LED setup
        -> kernel modules
-       -> WiFi station setup from /mnt/mtd/wpa_supplicant.conf
        -> Dropbear SSH
        -> short Sofia warmup for video hardware
+       -> WiFi mode selection
+            -> station manager with bounded retry/backoff
+            -> or AP + DHCP + provisioning portal
        -> app_watchdog.sh wibox-media-daemon /usr/bin/wibox-media-daemon
        -> optional /mnt/mtd/post.sh
 ```
@@ -21,6 +23,12 @@ This is the current production shape of the custom WiBox image.
 Sofia is still used once per boot to initialize hardware state that the D1 video
 capture path depends on. It is stopped after the warmup. It is not used per
 call.
+
+Station credentials select station mode even when the router is temporarily
+unavailable. The station manager retries without rebooting and restarts network
+consumers after a later lease. Missing credentials or the persistent
+`wifi_ap_requested` marker select AP mode. `STA_TO_AP` from the physical WiFi
+button creates that marker; saving or cancelling in the portal clears it.
 
 ## Runtime Ownership
 
