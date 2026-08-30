@@ -17,6 +17,15 @@
     } \
 } while (0)
 
+/* The RTSP audio backchannel plays received frames via audio_hw_send_frame();
+   this integration test does not link the audio HW layer, so stub it out. */
+int audio_hw_send_frame(const unsigned char *buffer, size_t len)
+{
+    (void)buffer;
+    (void)len;
+    return 0;
+}
+
 static volatile int callback_video;
 static volatile int callback_audio;
 
