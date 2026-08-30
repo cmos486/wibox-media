@@ -1,4 +1,5 @@
 #include "rtsp_stream.h"
+#include "audio_hw.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -35,6 +36,8 @@ typedef struct {
     int has_audio;
     int video_channel;
     int audio_channel;
+    int has_backchannel;
+    int backchannel_channel;
     unsigned int session_id;
     pthread_t thread;
     pthread_mutex_t send_mutex;
@@ -79,7 +82,8 @@ static int count_audio_clients_locked(void)
     int count = 0;
 
     for (i = 0; i < MAX_RTSP_CLIENTS; i++) {
-        if (clients[i].active && clients[i].playing && clients[i].has_audio) {
+        if (clients[i].active && clients[i].playing &&
+            (clients[i].has_audio || clients[i].has_backchannel)) {
             count++;
         }
     }
@@ -126,6 +130,7 @@ static void close_client_locked(int idx)
     clients[idx].playing = 0;
     clients[idx].has_video = 0;
     clients[idx].has_audio = 0;
+    clients[idx].has_backchannel = 0;
 }
 
 static ssize_t send_locked(rtsp_client_t *client, const void *buf, size_t len)
@@ -402,11 +407,19 @@ static void handle_options(rtsp_client_t *client, int cseq)
                      NULL, NULL);
 }
 
-static void handle_describe(rtsp_client_t *client, int cseq)
+static void handle_describe(rtsp_client_t *client, int cseq, const char *req)
 {
     char extra[512];
     char video_sdp[512] = "";
-    char sdp[1536];
+    char backchannel_sdp[256] = "";
+    char sdp[1792];
+    /* Advertise the audio backchannel track unconditionally: go2rtc (and other
+     * ONVIF clients) auto-detect the sendonly audio track from the SDP rather
+     * than sending the ONVIF Require header. */
+    int req_has_backchannel = (req && find_case_substr(req, "backchannel") != NULL);
+    int want_backchannel = 1;
+    printf("rtsp: DESCRIBE backchannel req_hdr=%d advertise=%d\n",
+           req_has_backchannel, want_backchannel);
 
     snprintf(extra, sizeof(extra),
              "Content-Base: rtsp://%s:%d/live/\r\n",
@@ -420,6 +433,16 @@ static void handle_describe(rtsp_client_t *client, int cseq)
                  "a=control:trackID=0\r\n");
     }
 
+    /* ONVIF-style audio backchannel: lets a client (e.g. go2rtc) send PCMA
+     * audio to the WiBox for two-way talk. Only advertised when requested. */
+    if (want_backchannel) {
+        snprintf(backchannel_sdp, sizeof(backchannel_sdp),
+                 "m=audio 0 RTP/AVP 8\r\n"
+                 "a=rtpmap:8 PCMA/8000\r\n"
+                 "a=sendonly\r\n"
+                 "a=control:trackID=2\r\n");
+    }
+
     snprintf(sdp, sizeof(sdp),
              "v=0\r\n"
              "o=- 0 0 IN IP4 %s\r\n"
@@ -430,8 +453,9 @@ static void handle_describe(rtsp_client_t *client, int cseq)
              "%s"
              "m=audio 0 RTP/AVP 8\r\n"
              "a=rtpmap:8 PCMA/8000\r\n"
-             "a=control:trackID=1\r\n",
-             rtsp_local_ip, video_sdp);
+             "a=control:trackID=1\r\n"
+             "%s",
+             rtsp_local_ip, video_sdp, backchannel_sdp);
 
     rtsp_send_simple(client, cseq, 200, "OK", extra, sdp, "application/sdp");
 }
@@ -439,9 +463,12 @@ static void handle_describe(rtsp_client_t *client, int cseq)
 static void handle_setup(rtsp_client_t *client, int cseq, const char *req,
                          const char *uri)
 {
-    int is_audio = strstr(uri, "trackID=1") != NULL;
-    int is_video = strstr(uri, "trackID=0") != NULL || !is_audio;
-    int rtp_channel = parse_interleaved_channel(req, is_audio ? 2 : 0);
+    int is_backchannel = strstr(uri, "trackID=2") != NULL;
+    int is_audio = !is_backchannel && strstr(uri, "trackID=1") != NULL;
+    int is_video = !is_backchannel && !is_audio &&
+                   (strstr(uri, "trackID=0") != NULL || 1);
+    int rtp_channel = parse_interleaved_channel(req,
+                          is_backchannel ? 4 : (is_audio ? 2 : 0));
     char extra[512];
 
     if (is_video && !rtsp_video_enabled) {
@@ -449,7 +476,10 @@ static void handle_setup(rtsp_client_t *client, int cseq, const char *req,
         return;
     }
 
-    if (is_audio) {
+    if (is_backchannel) {
+        client->has_backchannel = 1;
+        client->backchannel_channel = rtp_channel;
+    } else if (is_audio) {
         client->has_audio = 1;
         client->audio_channel = rtp_channel;
     } else if (is_video) {
@@ -458,7 +488,9 @@ static void handle_setup(rtsp_client_t *client, int cseq, const char *req,
     }
 
     printf("rtsp: SETUP session=%08x uri=%s media=%s channel=%d\n",
-           client->session_id, uri, is_audio ? "audio" : "video", rtp_channel);
+           client->session_id, uri,
+           is_backchannel ? "backchannel" : (is_audio ? "audio" : "video"),
+           rtp_channel);
 
     snprintf(extra, sizeof(extra),
              "Session: %08x\r\n"
@@ -522,7 +554,7 @@ static void consume_rx_bytes(char *rxbuf, size_t *rxlen, size_t consumed)
     *rxlen -= consumed;
 }
 
-static int read_rtsp_request(int fd, char *buf, size_t size,
+static int read_rtsp_request(rtsp_client_t *client, int fd, char *buf, size_t size,
                              char *rxbuf, size_t *rxlen)
 {
     if (!buf || size == 0 || !rxbuf || !rxlen) {
@@ -537,10 +569,32 @@ static int read_rtsp_request(int fd, char *buf, size_t size,
         }
 
         if (*rxlen >= 4 && rxbuf[0] == '$') {
+            unsigned int ch = (unsigned int)(unsigned char)rxbuf[1];
             size_t payload_len = ((size_t)(unsigned char)rxbuf[2] << 8) |
                                  (size_t)(unsigned char)rxbuf[3];
             size_t frame_len = 4U + payload_len;
             if (*rxlen >= frame_len) {
+                /* Audio backchannel: incoming RTP (PCMA) from the client is
+                 * decoded and played out the WiBox speaker for two-way talk. */
+                if (client && client->has_backchannel &&
+                    (int)ch == client->backchannel_channel && payload_len >= 12) {
+                    const unsigned char *rtp = (const unsigned char *)(rxbuf + 4);
+                    size_t hdr = 12U + (size_t)(rtp[0] & 0x0F) * 4U;
+                    if (payload_len > hdr) {
+                        /* Throttle: if the audio output is unavailable (e.g. no
+                         * intercom hardware on the bench), stop hammering the
+                         * GADI subsystem - it destabilizes the shared audio/video
+                         * hardware and floods the log. Re-probe occasionally so it
+                         * recovers automatically once the speaker works. */
+                        static unsigned int bc_pkt = 0;
+                        static int bc_ao_ok = 1;
+                        bc_pkt++;
+                        if (bc_ao_ok || (bc_pkt % 250U == 0U)) {
+                            bc_ao_ok = (audio_hw_send_frame(rtp + hdr,
+                                            payload_len - hdr) == 0);
+                        }
+                    }
+                }
                 consume_rx_bytes(rxbuf, rxlen, frame_len);
                 continue;
             }
@@ -593,7 +647,7 @@ static void *client_thread_func(void *arg)
         char uri[512] = {0};
         int cseq;
 
-        if (read_rtsp_request(client->fd, req, sizeof(req), rxbuf, &rxlen) <= 0) {
+        if (read_rtsp_request(client, client->fd, req, sizeof(req), rxbuf, &rxlen) <= 0) {
             break;
         }
 
@@ -614,7 +668,7 @@ static void *client_thread_func(void *arg)
             handle_options(client, cseq);
         } else if (strcasecmp(method, "DESCRIBE") == 0) {
             printf("rtsp: DESCRIBE session=%08x uri=%s\n", client->session_id, uri);
-            handle_describe(client, cseq);
+            handle_describe(client, cseq, req);
         } else if (strcasecmp(method, "SETUP") == 0) {
             handle_setup(client, cseq, req, uri);
         } else if (strcasecmp(method, "PLAY") == 0) {
@@ -653,8 +707,10 @@ static int allocate_client(int fd)
             clients[i].playing = 0;
             clients[i].has_video = 0;
             clients[i].has_audio = 0;
+            clients[i].has_backchannel = 0;
             clients[i].video_channel = 0;
             clients[i].audio_channel = 2;
+            clients[i].backchannel_channel = 4;
             clients[i].session_id = (unsigned int)time(NULL) ^ (unsigned int)getpid() ^ (unsigned int)i;
             pthread_mutex_unlock(&clients_mutex);
             return i;
