@@ -423,11 +423,15 @@ static void handle_describe(rtsp_client_t *client, int cseq, const char *req)
     char video_sdp[512] = "";
     char backchannel_sdp[256] = "";
     char sdp[1792];
-    /* Advertise the audio backchannel track unconditionally: go2rtc (and other
-     * ONVIF clients) auto-detect the sendonly audio track from the SDP rather
-     * than sending the ONVIF Require header. */
+    /* Advertise the sendonly audio backchannel track only to clients that want
+     * it: those sending an ONVIF "...backchannel" Require header, or go2rtc
+     * (matched by its User-Agent, since it may issue a discovery DESCRIBE before
+     * the header). Plain RTSP clients (VLC, ffmpeg, the HA generic camera) choke
+     * on the extra sendonly track and render nothing, so they must get a clean
+     * video+audio stream. */
     int req_has_backchannel = (req && find_case_substr(req, "backchannel") != NULL);
-    int want_backchannel = 1;
+    int req_is_go2rtc = (req && find_case_substr(req, "go2rtc") != NULL);
+    int want_backchannel = req_has_backchannel || req_is_go2rtc;
     printf("rtsp: DESCRIBE backchannel req_hdr=%d advertise=%d\n",
            req_has_backchannel, want_backchannel);
 
@@ -479,10 +483,28 @@ static void handle_setup(rtsp_client_t *client, int cseq, const char *req,
                    (strstr(uri, "trackID=0") != NULL || 1);
     int rtp_channel = parse_interleaved_channel(req,
                           is_backchannel ? 4 : (is_audio ? 2 : 0));
+    const char *transport = find_header(req, "Transport");
     char extra[512];
 
     if (is_video && !rtsp_video_enabled) {
         rtsp_send_simple(client, cseq, 404, "Not Found", NULL, NULL, NULL);
+        return;
+    }
+
+    /* This server only delivers RTP over the RTSP TCP connection (interleaved).
+     * A client that requests plain UDP (client_port, no interleaved/TCP) — VLC
+     * does this by default — would otherwise get an interleaved response it did
+     * not ask for and fail to demux the stream (data arrives but nothing
+     * decodes). Reply 461 so the client falls back to TCP interleaved on its
+     * next SETUP, per RFC 2326, instead of silently rendering nothing. */
+    if (transport &&
+        find_case_substr(transport, "client_port") != NULL &&
+        find_case_substr(transport, "interleaved") == NULL &&
+        find_case_substr(transport, "/TCP") == NULL) {
+        printf("rtsp: SETUP session=%08x UDP transport unsupported -> 461 "
+               "(client should retry over TCP)\n", client->session_id);
+        rtsp_send_simple(client, cseq, 461, "Unsupported Transport",
+                         NULL, NULL, NULL);
         return;
     }
 
@@ -592,7 +614,29 @@ static int read_rtsp_request(rtsp_client_t *client, int fd, char *buf, size_t si
                     (int)ch == client->backchannel_channel && payload_len >= 12) {
                     const unsigned char *rtp = (const unsigned char *)(rxbuf + 4);
                     size_t hdr = 12U + (size_t)(rtp[0] & 0x0F) * 4U;
+                    size_t audio_len;
+                    /* WebRTC sources (go2rtc forwards the browser's audio) set
+                     * the RTP extension bit (X) and sometimes padding (P). The
+                     * old parser only skipped the CSRC list, so the PCMA payload
+                     * offset/length came out wrong and the AO driver rejected
+                     * every frame with -2001 ("length of frame is invalid"),
+                     * breaking two-way audio. Skip the extension header (4 bytes
+                     * + length words) and strip trailing padding. */
+                    if ((rtp[0] & 0x10) && payload_len >= hdr + 4U) {
+                        size_t ext_words = ((size_t)rtp[hdr + 2] << 8) |
+                                           (size_t)rtp[hdr + 3];
+                        hdr += 4U + ext_words * 4U;
+                    }
                     if (payload_len > hdr) {
+                        audio_len = payload_len - hdr;
+                        if ((rtp[0] & 0x20) && audio_len > 0) {
+                            size_t pad = (size_t)rtp[payload_len - 1];
+                            audio_len = (pad <= audio_len) ? audio_len - pad : 0;
+                        }
+                        if (audio_len == 0) {
+                            consume_rx_bytes(rxbuf, rxlen, frame_len);
+                            continue;
+                        }
                         /* Throttle: if the audio output is unavailable (e.g. no
                          * intercom hardware on the bench), stop hammering the
                          * GADI subsystem - it destabilizes the shared audio/video
@@ -600,10 +644,44 @@ static int read_rtsp_request(rtsp_client_t *client, int fd, char *buf, size_t si
                          * recovers automatically once the speaker works. */
                         static unsigned int bc_pkt = 0;
                         static int bc_ao_ok = 1;
+                        /* go2rtc/WebRTC delivers large PCMA chunks (observed
+                         * 1024 bytes) but the AO driver accepts only exactly
+                         * frame_size samples (160 = 20ms) and rejects anything
+                         * else with -2001. Buffer the incoming audio and feed it
+                         * out in fixed frames so two-way audio actually plays. */
+                        static unsigned char bc_buf[4096];
+                        static size_t bc_buf_len = 0;
+                        size_t ao_frame = (size_t)audio_hw_frame_size();
+                        int try_send;
                         bc_pkt++;
-                        if (bc_ao_ok || (bc_pkt % 250U == 0U)) {
-                            bc_ao_ok = (audio_hw_send_frame(rtp + hdr,
-                                            payload_len - hdr) == 0);
+                        if (ao_frame == 0 || ao_frame > sizeof(bc_buf)) {
+                            ao_frame = 160;
+                        }
+                        if (bc_pkt == 1U || (bc_pkt % 250U == 0U)) {
+                            printf("rtsp: backchannel audio pkt=%u payload=%zu "
+                                   "audio_len=%zu ext=%d pad=%d ao_frame=%zu\n",
+                                   bc_pkt, payload_len, audio_len,
+                                   (rtp[0] & 0x10) ? 1 : 0,
+                                   (rtp[0] & 0x20) ? 1 : 0, ao_frame);
+                        }
+                        if (bc_buf_len + audio_len > sizeof(bc_buf)) {
+                            bc_buf_len = 0; /* desync guard: drop stale partial */
+                        }
+                        if (audio_len <= sizeof(bc_buf) - bc_buf_len) {
+                            memcpy(bc_buf + bc_buf_len, rtp + hdr, audio_len);
+                            bc_buf_len += audio_len;
+                        }
+                        try_send = bc_ao_ok || (bc_pkt % 250U == 0U);
+                        while (bc_buf_len >= ao_frame) {
+                            if (try_send) {
+                                bc_ao_ok = (audio_hw_send_frame(bc_buf,
+                                                ao_frame) == 0);
+                                try_send = bc_ao_ok;
+                            }
+                            bc_buf_len -= ao_frame;
+                            if (bc_buf_len > 0) {
+                                memmove(bc_buf, bc_buf + ao_frame, bc_buf_len);
+                            }
                         }
                     }
                 }

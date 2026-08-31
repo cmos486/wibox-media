@@ -26,6 +26,11 @@ int audio_hw_send_frame(const unsigned char *buffer, size_t len)
     return 0;
 }
 
+int audio_hw_frame_size(void)
+{
+    return 160;
+}
+
 static volatile int callback_video;
 static volatile int callback_audio;
 

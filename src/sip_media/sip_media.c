@@ -3233,6 +3233,7 @@ int main(int argc, char *argv[]) {
 
     // Main event loop
     time_t last_nat_keepalive = time(NULL);
+    time_t last_video_reconcile = time(NULL);
 
     while (!quit_flag) {
         pj_time_val timeout = {0, 100};
@@ -3247,6 +3248,36 @@ int main(int argc, char *argv[]) {
         if (get_audio_sip_rtp_active() && (now - last_nat_keepalive >= 20)) {
             send_nat_keepalive();
             last_nat_keepalive = now;
+        }
+
+        /* Self-heal the video worker lifecycle (every second). A rapid RTSP
+         * teardown+reconnect - go2rtc probes the stream, then opens the real
+         * session ~1s later - races the up-to-2s stop_video_session() against
+         * the new client's start: the start sees the not-yet-cleared pid and
+         * skips, then the stop clears it, leaving clients connected with no
+         * worker and the stream stuck spinning. The per-event callback is
+         * edge-triggered and cannot recover this state, so reconcile here: if
+         * video clients are watching but no worker runs (and SIP does not own
+         * the encoder), start one. start_video_worker() re-checks the pid under
+         * its own lock, so this can never double-fork. */
+        if (app_config.rtsp_enabled && app_config.video_enabled &&
+            (now - last_video_reconcile >= 1)) {
+            int reconcile_clients;
+            int worker_absent;
+            last_video_reconcile = now;
+            reconcile_clients = rtsp_stream_get_video_client_count();
+            pthread_mutex_lock(&snapshot_mutex);
+            worker_absent = (video_bridge_pid <= 0);
+            pthread_mutex_unlock(&snapshot_mutex);
+            if (reconcile_clients > 0 && worker_absent &&
+                !sip_calling_is_call_active()) {
+                PJ_LOG(3,(THIS_FILE,
+                          "Reconcile: %d video client(s) but no worker; starting",
+                          reconcile_clients));
+                if (start_rtsp_preview_session("reconcile")) {
+                    force_video_worker_idr("reconcile");
+                }
+            }
         }
     }
 
