@@ -165,6 +165,9 @@ per call.
   devices.
 - [UART Codes](docs/codes.md): known `/dev/ttySGK1` frames.
 - [D1 Video Capture](docs/d1_video_capture.md): low-level H.264 capture notes.
+- [Home Assistant Two-Way Audio](docs/homeassistant-two-way-audio.md): see, talk
+  and open the door from tablets and phone (go2rtc + WebRTC), with the
+  [`wibox-intercom-video-card`](https://github.com/cmos486/wibox-intercom-video-card).
 
 Reverse-engineering logs remain in `research/` for contributors; they are not
 needed for normal installation.

@@ -13,10 +13,22 @@ over the air.
   `audio_process.h` ABI was recovered from the official binary's DWARF, so
   echo cancellation initializes correctly in locally-built firmware (it did not
   before — it failed with `-2021`).
+- **go2rtc / WebRTC interop fixes** so the RTSP stream works cleanly with
+  go2rtc-backed clients: reply `461` to UDP-only SETUP (VLC and other UDP-first
+  clients fall back to TCP), a video-worker lifecycle reconcile (go2rtc's
+  probe+reconnect no longer leaves the stream stuck with no worker), and correct
+  RTP parsing + reframing of the WebRTC microphone audio into the backchannel.
 - **A batch of correctness/robustness/security fixes** found by an in-depth
   review (memory safety, threading/locking, RTSP DoS + slot lifecycle, MQTT and
   video-worker races). Most are also proposed upstream as PRs.
 - **RTSP authentication** guidance — see [SECURITY.md](SECURITY.md).
+
+## Home Assistant two-way audio (see + talk + open door, local and remote)
+
+A full self-hosted "answer the door" setup — video, talk-back and door from
+tablets at home and your phone away — using go2rtc + WebRTC and the companion
+[`wibox-intercom-video-card`](https://github.com/cmos486/wibox-intercom-video-card).
+Step-by-step guide: **[docs/homeassistant-two-way-audio.md](docs/homeassistant-two-way-audio.md)**.
 
 ## Branch and version model
 
