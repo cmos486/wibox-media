@@ -1,0 +1,105 @@
+20:07:12 | ===== marca A: bus libre, 0 clientes RTSP - llamada desde la calle =====
+20:07:40 | 20:07:39.804 wibox-media-da  UART raw read 4 bytes: FB 11 00 1C
+20:07:40 | 20:07:39.805 wibox-media-da  UART code received: ALARM_REPORT [FB 11 00 1C]
+20:07:40 | 20:07:39.806 wibox-media-da  DING detected from physical_panel - checking if we can make outgoing call
+20:07:40 | 20:07:39.807 wibox-media-da  Call trace id=33547883-00000001 seq=1 event=ringing source=physical_panel route=none state=ringing reason=alarm-report terminal=0
+20:07:40 | 20:07:39.807 wibox-media-da  Outgoing SIP call disabled - keeping media_state=ringing only
+20:07:40 | 20:07:39.808 wibox-media-da  Call trace id=33547883-00000001 seq=2 event=sip_disabled source=physical_panel route=none state=ringing reason=outgoing-disabled terminal=0
+20:07:40 | Snapshot ring waiting 2000 ms before capture
+20:07:42 | Snapshot ring capturing without temporary panel context
+20:07:43 | mqtt: published snapshot 90062 bytes as 120084 base64 bytes rc=0
+20:07:43 | Snapshot complete status=0
+20:07:47 | 20:07:46.844 wibox-media-da  UART raw read 4 bytes: FB 23 00 2E
+20:07:47 | 20:07:46.845 wibox-media-da  UART code received: PHYSICAL_HANDSET_ANSWERED [FB 23 00 2E]
+20:07:47 | 20:07:46.846 wibox-media-da  Physical handset answered - ending remote ringing state
+20:07:47 | 20:07:46.846 wibox-media-da  Cancelled pending ringing timeout reason=PHYSICAL_HANDSET_ANSWERED
+20:07:47 | 20:07:46.846 wibox-media-da  Clearing intercom call state reason=PHYSICAL_HANDSET_ANSWERED
+20:07:47 | 20:07:46.848 wibox-media-da  Call trace id=33547883-00000001 seq=3 event=physical_handset_answered source=physical_panel route=physical_handset state=idle reason=PHYSICAL_HANDSET_ANSWERED terminal=1
+20:08:05 | ===== marca A completado: suena monitor, audio OK, puerta abre =====
+20:09:01 | ===== marca B: WiBox coge el bus (cliente RTSP) y llega llamada de calle =====
+20:09:02 | rtsp: client connected slot=0
+20:09:02 | rtsp: OPTIONS session=6aa446aa
+20:09:02 | rtsp: DESCRIBE session=6aa446aa uri=rtsp://192.168.5.62:8554/live
+20:09:02 | rtsp: DESCRIBE backchannel req_hdr=0 advertise=0
+20:09:02 | rtsp: SETUP session=6aa446aa uri=rtsp://192.168.5.62:8554/live/trackID=0 media=video channel=0
+20:09:02 | rtsp: PLAY session=6aa446aa video=1 audio=0 vchan=0 achan=2
+20:09:02 | rtsp: active clients video=1 audio=0
+20:09:02 | Sent intercom command: START_CALL [FB 14 01 20]
+20:09:02 | 20:09:02.128 wibox-media-da !Started video worker pid=1947 reason=rtsp-client sip_rtp=0 target=-:0 payload=96 bitrate=4096kbps gop_n=25 idr_interval=1 brc_mode=0 rtsp_periodic_idr_ms=1000 rtsp_fd=6
+20:09:02 | 20:09:02.128 wibox-media-da  Requested video IDR frame (rtsp-client)
+20:09:02 | 20:09:02.634 wibox-media-da !UART raw read 4 bytes: FB 14 01 20
+20:09:02 | 20:09:02.635 wibox-media-da  UART code received: START_CALL [FB 14 01 20]
+20:09:02 | 20:09:02.635 wibox-media-da  Intercom call line is active
+20:09:02 | 20:09:02.635 wibox-media-da  Muting audio input for 900ms reason=uart-start-call
+20:10:18 | ===== marca B: pulsacion en la calle CON el bus cogido -> solo un pi, no llama =====
+20:10:32 | rtsp: active clients video=0 audio=0
+20:10:32 | Sent intercom command: STOP_CALL [FB 14 00 1F]
+20:10:32 | 20:10:31.849 wibox-media-da !Clearing intercom call state reason=rtsp-client
+20:10:32 | 20:10:31.849 wibox-media-da  Stopping video worker pid=1947
+20:10:32 | rtsp: client disconnected slot=0
+20:10:52 | ===== marca C: bus liberado =====
+20:11:09 | 20:11:08.424 wibox-media-da !UART raw read 4 bytes: FB 11 00 1C
+20:11:09 | 20:11:08.425 wibox-media-da  UART code received: ALARM_REPORT [FB 11 00 1C]
+20:11:09 | 20:11:08.426 wibox-media-da  DING detected from physical_panel - checking if we can make outgoing call
+20:11:09 | 20:11:08.427 wibox-media-da  Call trace id=33547883-00000002 seq=1 event=ringing source=physical_panel route=none state=ringing reason=alarm-report terminal=0
+20:11:09 | 20:11:08.427 wibox-media-da  Outgoing SIP call disabled - keeping media_state=ringing only
+20:11:09 | 20:11:08.428 wibox-media-da  Call trace id=33547883-00000002 seq=2 event=sip_disabled source=physical_panel route=none state=ringing reason=outgoing-disabled terminal=0
+20:11:09 | Snapshot ring waiting 2000 ms before capture
+20:11:11 | Snapshot ring capturing without temporary panel context
+20:11:12 | mqtt: published snapshot 78165 bytes as 104220 base64 bytes rc=0
+20:11:12 | Snapshot complete status=0
+20:11:43 | 20:11:42.964 wibox-media-da  UART raw read 4 bytes: FB 13 00 1E
+20:11:43 | 20:11:42.965 wibox-media-da  UART code received: HANG_UP_0 [FB 13 00 1E]
+20:11:43 | 20:11:42.966 wibox-media-da  Cancelled pending ringing timeout reason=HANG_UP_0
+20:11:43 | 20:11:42.966 wibox-media-da  Clearing intercom call state reason=HANG_UP_0
+20:11:43 | 20:11:42.967 wibox-media-da  Call trace id=33547883-00000002 seq=3 event=hang_up_0 source=physical_panel route=none state=idle reason=HANG_UP_0 terminal=1
+20:11:54 | ===== marca D: llamada en curso en el monitor fisico, abrimos camara a mitad =====
+20:12:29 | 20:12:29.714 wibox-media-da  UART raw read 4 bytes: FB 11 00 1C
+20:12:29 | 20:12:29.715 wibox-media-da  UART code received: ALARM_REPORT [FB 11 00 1C]
+20:12:29 | 20:12:29.716 wibox-media-da  DING detected from physical_panel - checking if we can make outgoing call
+20:12:29 | 20:12:29.717 wibox-media-da  Call trace id=33547883-00000003 seq=1 event=ringing source=physical_panel route=none state=ringing reason=alarm-report terminal=0
+20:12:29 | 20:12:29.717 wibox-media-da  Outgoing SIP call disabled - keeping media_state=ringing only
+20:12:29 | 20:12:29.718 wibox-media-da  Call trace id=33547883-00000003 seq=2 event=sip_disabled source=physical_panel route=none state=ringing reason=outgoing-disabled terminal=0
+20:12:29 | Snapshot ring waiting 2000 ms before capture
+20:12:31 | Snapshot ring capturing without temporary panel context
+20:12:33 | mqtt: published snapshot 83678 bytes as 111572 base64 bytes rc=0
+20:12:33 | Snapshot complete status=0
+20:12:37 | 20:12:36.094 wibox-media-da  UART raw read 4 bytes: FB 23 00 2E
+20:12:37 | 20:12:36.095 wibox-media-da  UART code received: PHYSICAL_HANDSET_ANSWERED [FB 23 00 2E]
+20:12:37 | 20:12:36.096 wibox-media-da  Physical handset answered - ending remote ringing state
+20:12:37 | 20:12:36.096 wibox-media-da  Cancelled pending ringing timeout reason=PHYSICAL_HANDSET_ANSWERED
+20:12:37 | 20:12:36.096 wibox-media-da  Clearing intercom call state reason=PHYSICAL_HANDSET_ANSWERED
+20:12:37 | 20:12:36.098 wibox-media-da  Call trace id=33547883-00000003 seq=3 event=physical_handset_answered source=physical_panel route=physical_handset state=idle reason=PHYSICAL_HANDSET_ANSWERED terminal=1
+20:12:44 | rtsp: client connected slot=0
+20:12:44 | rtsp: OPTIONS session=6aa4418c
+20:12:44 | rtsp: DESCRIBE session=6aa4418c uri=rtsp://192.168.5.62:8554/live
+20:12:44 | rtsp: DESCRIBE backchannel req_hdr=0 advertise=0
+20:12:44 | rtsp: SETUP session=6aa4418c uri=rtsp://192.168.5.62:8554/live/trackID=0 media=video channel=0
+20:12:44 | rtsp: PLAY session=6aa4418c video=1 audio=0 vchan=0 achan=2
+20:12:44 | rtsp: active clients video=1 audio=0
+20:12:44 | Sent intercom command: START_CALL [FB 14 01 20]
+20:12:44 | 20:12:44.022 wibox-media-da !Started video worker pid=2057 reason=rtsp-client sip_rtp=0 target=-:0 payload=96 bitrate=4096kbps gop_n=25 idr_interval=1 brc_mode=0 rtsp_periodic_idr_ms=1000 rtsp_fd=6
+20:12:44 | 20:12:44.022 wibox-media-da  Requested video IDR frame (rtsp-client)
+20:12:45 | 20:12:44.124 wibox-media-da !UART raw read 4 bytes: FB 13 01 1F
+20:12:45 | 20:12:44.125 wibox-media-da  UART code received: HANG_UP_1 [FB 13 01 1F]
+20:12:45 | 20:12:44.127 wibox-media-da  Cancelled pending ringing timeout reason=HANG_UP_1
+20:12:45 | 20:12:44.127 wibox-media-da  Clearing intercom call state reason=HANG_UP_1
+20:12:45 | 20:12:44.474 wibox-media-da !Intercom line dropped after 461 ms with viewers connected; next attempt in 5000 ms (refusals=1)
+20:12:50 | Sent intercom command: START_CALL [FB 14 01 20]
+20:12:50 | 20:12:50.074 wibox-media-da !UART raw read 4 bytes: FB 13 01 1F
+20:12:50 | 20:12:50.075 wibox-media-da  UART code received: HANG_UP_1 [FB 13 01 1F]
+20:12:50 | 20:12:50.076 wibox-media-da  Cancelled pending ringing timeout reason=HANG_UP_1
+20:12:50 | 20:12:50.077 wibox-media-da  Clearing intercom call state reason=HANG_UP_1
+20:12:51 | 20:12:51.074 wibox-media-da !Intercom line dropped after 1101 ms with viewers connected; next attempt in 15000 ms (refusals=2)
+20:13:07 | Sent intercom command: START_CALL [FB 14 01 20]
+20:13:08 | 20:13:07.594 wibox-media-da !UART raw read 4 bytes: FB 14 01 20
+20:13:08 | 20:13:07.595 wibox-media-da  UART code received: START_CALL [FB 14 01 20]
+20:13:08 | 20:13:07.596 wibox-media-da  Intercom call line is active
+20:13:08 | 20:13:07.596 wibox-media-da  Muting audio input for 900ms reason=uart-start-call
+20:13:29 | rtsp: TEARDOWN session=6aa4418c
+20:13:29 | rtsp: active clients video=0 audio=0
+20:13:29 | Sent intercom command: STOP_CALL [FB 14 00 1F]
+20:13:29 | 20:13:29.022 wibox-media-da !Clearing intercom call state reason=rtsp-client
+20:13:29 | 20:13:29.022 wibox-media-da  Stopping video worker pid=2057
+20:13:29 | rtsp: client disconnected slot=0
+20:13:36 | ===== marca D fin: la conversacion NO se corto, MCU denego con HANG_UP_1 =====

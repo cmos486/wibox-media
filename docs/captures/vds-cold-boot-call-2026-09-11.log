@@ -1,0 +1,18 @@
+20:16:33 | ===== marca E: primera llamada real despues del corte de corriente =====
+20:17:06 | 20:17:06.359 wibox-media-da  UART raw read 4 bytes: FB 11 00 1C
+20:17:06 | 20:17:06.360 wibox-media-da  UART code received: ALARM_REPORT [FB 11 00 1C]
+20:17:06 | 20:17:06.369 wibox-media-da  DING detected from physical_panel - checking if we can make outgoing call
+20:17:06 | 20:17:06.373 wibox-media-da  Call trace id=d85cab53-00000001 seq=1 event=ringing source=physical_panel route=none state=ringing reason=alarm-report terminal=0
+20:17:06 | 20:17:06.376 wibox-media-da  Outgoing SIP call disabled - keeping media_state=ringing only
+20:17:06 | Snapshot ring waiting 2000 ms before capture
+20:17:06 | 20:17:06.383 wibox-media-da  Call trace id=d85cab53-00000001 seq=2 event=sip_disabled source=physical_panel route=none state=ringing reason=outgoing-disabled terminal=0
+20:17:09 | Snapshot ring capturing without temporary panel context
+20:17:11 | mqtt: published snapshot 82131 bytes as 109508 base64 bytes rc=0
+20:17:11 | Snapshot complete status=0
+20:17:13 | 20:17:11.989 wibox-media-da  UART raw read 4 bytes: FB 23 00 2E
+20:17:13 | 20:17:11.990 wibox-media-da  UART code received: PHYSICAL_HANDSET_ANSWERED [FB 23 00 2E]
+20:17:13 | 20:17:11.992 wibox-media-da  Physical handset answered - ending remote ringing state
+20:17:13 | 20:17:11.992 wibox-media-da  Cancelled pending ringing timeout reason=PHYSICAL_HANDSET_ANSWERED
+20:17:13 | 20:17:11.992 wibox-media-da  Clearing intercom call state reason=PHYSICAL_HANDSET_ANSWERED
+20:17:13 | 20:17:11.992 wibox-media-da  Call trace id=d85cab53-00000001 seq=3 event=physical_handset_answered source=physical_panel route=physical_handset state=idle reason=PHYSICAL_HANDSET_ANSWERED terminal=1
+20:17:22 | ===== marca E OK: suena y funciona todo =====
