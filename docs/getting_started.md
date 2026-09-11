@@ -284,10 +284,19 @@ call. Press the WiBox forward button or use the Home Assistant
 
 The WiBox also has to be programmed on the VDS bus. If it is not paired with
 the installation address, the indoor monitor can still ring while the WiBox sees
-no `ALARM_REPORT` frame on `/dev/ttySGK1`. Re-run the Fermax PB2/VDS address
-programming flow: put the WiBox in address programming mode with PB2, then press
-the corresponding button on the physical indoor monitor so the WiBox stores the
-same address.
+no `ALARM_REPORT` frame on `/dev/ttySGK1`. Check which address it holds before
+assuming anything - writing `CUART_START` makes the MCU report it:
+
+```sh
+printf '\xfb\x10\x04\x1f' > /dev/ttySGK1   # -> FB 18 02 25 = VDS address 2
+```
+
+If it is wrong, re-run the Fermax address programming flow: short press (< 2 s)
+on **PB2**, then within 10 seconds press the **door-release button on the
+monitor** (not the call button on the outdoor panel). See
+[UART codes](codes.md#programming-the-vds-address) for the details and the
+gotchas. The address cannot be set over the UART - the MCU ignores a written
+`SAVE_ADDR`.
 
 A correctly detected outside-panel call appears in the daemon log as:
 

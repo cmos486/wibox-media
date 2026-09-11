@@ -26,6 +26,8 @@ typedef struct {
     int rtsp_port;
     char rtsp_auth_user[64];
     char rtsp_auth_pass[64];
+    int rtsp_intercom_line_enabled;
+    int rtsp_intercom_line_max_seconds;
 
     // Pipe Configuration
     char sip_listen_pipe[256];

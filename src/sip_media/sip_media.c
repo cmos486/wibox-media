@@ -86,6 +86,18 @@ static pthread_mutex_t reboot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int reboot_requested = 0;
 static pthread_mutex_t intercom_command_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t intercom_reopen_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Guards rtsp_line_opened_by_us. Lock order: rtsp_line_mutex before
+ * intercom_command_mutex (taken inside ensure_intercom_call_open); nothing
+ * acquires them the other way round. */
+static pthread_mutex_t rtsp_line_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int rtsp_line_opened_by_us = 0;
+static unsigned long long rtsp_line_opened_at_ms = 0;
+static unsigned long long rtsp_line_retry_after_ms = 0;
+static int rtsp_line_open_failures = 0;
+static int rtsp_line_capped = 0;
+/* A line that dies sooner than this was refused rather than used. */
+#define RTSP_LINE_SHORT_LIVED_MS 5000ULL
+#define RTSP_LINE_MAX_BACKOFF_STEP 4
 static long long intercom_last_close_ms = 0;
 static char intercom_last_close_reason[64] = "none";
 static char local_ip_addr[64] = "0.0.0.0";
@@ -115,6 +127,25 @@ static unsigned long long now_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return ((unsigned long long)tv.tv_sec * 1000ULL) + ((unsigned long long)tv.tv_usec / 1000ULL);
+}
+
+/*
+ * Clock for scheduling periodic work. The wall clock steps: this device boots
+ * without an RTC and the first NTP sync has been observed moving it ~2 hours
+ * backwards mid-session, which makes every "now - last >= interval" test in the
+ * main loop false until the clock catches up again - silently freezing the NAT
+ * keep-alive and both reconcile loops for that long. CLOCK_MONOTONIC never
+ * steps, so use it for intervals (wall time stays for logs and timestamps).
+ */
+static unsigned long long monotonic_ms(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return ((unsigned long long)ts.tv_sec * 1000ULL) +
+               ((unsigned long long)ts.tv_nsec / 1000000ULL);
+    }
+    return now_ms();
 }
 
 static uint32_t create_call_boot_nonce(void) {
@@ -303,6 +334,7 @@ static void unlock_door(const char* source);
 static int ensure_intercom_call_open(const char* reason);
 static void clear_intercom_call_state(const char* reason);
 static int close_intercom_call(const char* reason);
+static void rtsp_intercom_line_sync(int viewers_present, const char* reason);
 static void mqtt_open_door_callback(void* user_data);
 static void mqtt_trigger_f1_callback(void* user_data);
 static void mqtt_reboot_device_callback(void* user_data);
@@ -1289,13 +1321,19 @@ static void on_rtsp_client_count_change(int video_clients, int audio_clients, vo
     should_start_audio = audio_clients > 0 && !get_audio_engine_running();
     should_maybe_stop_audio = audio_clients == 0;
     if (!should_start_preview && !should_stop_preview &&
-        !should_start_audio && !should_maybe_stop_audio && !should_force_idr) {
+        !should_start_audio && !should_maybe_stop_audio && !should_force_idr &&
+        !app_config.rtsp_intercom_line_enabled) {
         return;
     }
 
     if (!ensure_pj_thread_registered("rtsp_callback")) {
         return;
     }
+
+    /* Before the encoder: bringing the bus line up first means the first
+     * frames carry the panel image rather than the blue no-signal screen. */
+    rtsp_intercom_line_sync(video_clients > 0 || audio_clients > 0,
+                            "rtsp-client");
 
     if (should_start_audio) {
         ensure_audio_engine_running("rtsp-client");
@@ -1454,6 +1492,134 @@ static int close_intercom_call(const char* reason) {
     clear_intercom_call_state(reason);
     pthread_mutex_unlock(&intercom_command_mutex);
     return rc == 0 ? 0 : -1;
+}
+
+/*
+ * Keep the VDS bus line in step with the RTSP/WebRTC viewers.
+ *
+ * The MCU only bridges the panel audio and video onto the module while an
+ * intercom call line is up (START_CALL, i.e. the Fermax auto switch-on). The
+ * RTSP path used to start just the local audio engine, so a client that opened
+ * the stream got the bare noise floor instead of the panel audio, nothing it
+ * sent on the backchannel reached the outdoor panel, and the encoder only saw
+ * the blue no-signal screen. Opening the line here is what makes the stream
+ * carry the real conversation.
+ *
+ * Level-triggered on purpose: a panel hangup clears the call state underneath
+ * us, so whenever viewers are present and the line is down it is brought back
+ * up. The close side only fires for a line this module opened, so a physical
+ * or SIP call that already owned it is never torn down from here.
+ */
+static unsigned long long rtsp_line_backoff_ms(int failures) {
+    switch (failures) {
+    case 0:  return 1000ULL;    /* panel timed out a healthy line: resume now */
+    case 1:  return 5000ULL;
+    case 2:  return 15000ULL;
+    case 3:  return 60000ULL;
+    default: return 300000ULL;
+    }
+}
+
+static void rtsp_intercom_line_sync(int viewers_present, const char* reason) {
+    unsigned long long now;
+
+    if (!app_config.rtsp_intercom_line_enabled) {
+        return;
+    }
+
+    pthread_mutex_lock(&rtsp_line_mutex);
+    now = monotonic_ms();
+
+    if (!viewers_present) {
+        if (rtsp_line_opened_by_us) {
+            rtsp_line_opened_by_us = 0;
+            if (!sip_calling_is_call_active()) {
+                close_intercom_call(reason);
+            }
+        }
+        /* The next viewer starts from a clean slate. */
+        rtsp_line_open_failures = 0;
+        rtsp_line_retry_after_ms = 0;
+        rtsp_line_capped = 0;
+        goto out;
+    }
+
+    /*
+     * Safety cap. A client that never disconnects (a dashboard card left on a
+     * wall panel, a stuck session) would otherwise sit on the VDS bus forever,
+     * and the bus is shared with the neighbours. Release it after the cap and
+     * stay off until every client has gone, so recovering is an explicit act:
+     * close the card and open it again.
+     */
+    if (rtsp_line_opened_by_us && app_config.rtsp_intercom_line_max_seconds > 0 &&
+        (now - rtsp_line_opened_at_ms) >=
+            (unsigned long long)app_config.rtsp_intercom_line_max_seconds * 1000ULL) {
+        rtsp_line_opened_by_us = 0;
+        rtsp_line_capped = 1;
+        PJ_LOG(2,(THIS_FILE,
+                  "Intercom line held for %d s with viewers still connected; "
+                  "releasing the bus until they disconnect (reason=%s)",
+                  app_config.rtsp_intercom_line_max_seconds,
+                  reason ? reason : "unknown"));
+        if (!sip_calling_is_call_active()) {
+            close_intercom_call(reason);
+        }
+        goto out;
+    }
+
+    if (get_call_active_status() || sip_calling_is_call_active()) {
+        goto out;   /* already up: ours, a SIP call, or a real panel call */
+    }
+
+    if (rtsp_line_capped) {
+        goto out;   /* capped: wait for the viewers to leave */
+    }
+
+    /*
+     * Viewers are connected but the line is down. If we had opened it, either
+     * the panel dropped it (its auto switch-on times out after ~95 s, which is
+     * worth resuming) or the MCU refused it outright - it answers such a
+     * START_CALL with HANG_UP_1 straight away, and retrying every second turns
+     * into a 1 Hz storm on the VDS bus. Tell the two apart by how long the line
+     * survived and back off when it was refused.
+     */
+    if (rtsp_line_opened_by_us) {
+        unsigned long long lifetime = now - rtsp_line_opened_at_ms;
+
+        rtsp_line_opened_by_us = 0;
+        if (lifetime < RTSP_LINE_SHORT_LIVED_MS) {
+            if (rtsp_line_open_failures < RTSP_LINE_MAX_BACKOFF_STEP) {
+                rtsp_line_open_failures++;
+            }
+        } else {
+            rtsp_line_open_failures = 0;
+        }
+        rtsp_line_retry_after_ms = now + rtsp_line_backoff_ms(rtsp_line_open_failures);
+        PJ_LOG(3,(THIS_FILE,
+                  "Intercom line dropped after %llu ms with viewers connected; "
+                  "next attempt in %llu ms (refusals=%d)",
+                  lifetime, rtsp_line_retry_after_ms - now,
+                  rtsp_line_open_failures));
+        goto out;
+    }
+
+    if (now < rtsp_line_retry_after_ms) {
+        goto out;   /* backing off */
+    }
+
+    if (ensure_intercom_call_open(reason) > 0) {
+        rtsp_line_opened_by_us = 1;
+        rtsp_line_opened_at_ms = now;
+    } else {
+        /* Could not even send the command; do not spin on it either. */
+        if (rtsp_line_open_failures < RTSP_LINE_MAX_BACKOFF_STEP) {
+            rtsp_line_open_failures++;
+        }
+        rtsp_line_retry_after_ms = now + rtsp_line_backoff_ms(rtsp_line_open_failures);
+    }
+
+out:
+    pthread_mutex_unlock(&rtsp_line_mutex);
 }
 
 
@@ -3232,8 +3398,9 @@ int main(int argc, char *argv[]) {
     printf("Send '%s' to %s to trigger outgoing call\n", app_config.ding_message, app_config.sip_listen_pipe);
 
     // Main event loop
-    time_t last_nat_keepalive = time(NULL);
-    time_t last_video_reconcile = time(NULL);
+    unsigned long long last_nat_keepalive = monotonic_ms();
+    unsigned long long last_video_reconcile = monotonic_ms();
+    unsigned long long last_line_reconcile = monotonic_ms();
 
     while (!quit_flag) {
         pj_time_val timeout = {0, 100};
@@ -3244,8 +3411,8 @@ int main(int argc, char *argv[]) {
         sip_calling_check_timeout();
 
         // NAT keep-alive during active calls (every 20 seconds)
-        time_t now = time(NULL);
-        if (get_audio_sip_rtp_active() && (now - last_nat_keepalive >= 20)) {
+        unsigned long long now = monotonic_ms();
+        if (get_audio_sip_rtp_active() && (now - last_nat_keepalive >= 20000ULL)) {
             send_nat_keepalive();
             last_nat_keepalive = now;
         }
@@ -3261,7 +3428,7 @@ int main(int argc, char *argv[]) {
          * the encoder), start one. start_video_worker() re-checks the pid under
          * its own lock, so this can never double-fork. */
         if (app_config.rtsp_enabled && app_config.video_enabled &&
-            (now - last_video_reconcile >= 1)) {
+            (now - last_video_reconcile >= 1000ULL)) {
             int reconcile_clients;
             int worker_absent;
             last_video_reconcile = now;
@@ -3278,6 +3445,18 @@ int main(int argc, char *argv[]) {
                     force_video_worker_idr("reconcile");
                 }
             }
+        }
+
+        /* Same self-heal for the VDS bus line: the client callback is
+         * edge-triggered, so a panel hangup while viewers stay connected would
+         * otherwise leave the stream on the noise floor and a blue picture
+         * until someone reconnected. */
+        if (app_config.rtsp_enabled && app_config.rtsp_intercom_line_enabled &&
+            (now - last_line_reconcile >= 1000ULL)) {
+            last_line_reconcile = now;
+            rtsp_intercom_line_sync(rtsp_stream_get_video_client_count() > 0 ||
+                                    rtsp_stream_get_audio_client_count() > 0,
+                                    "rtsp-reconcile");
         }
     }
 

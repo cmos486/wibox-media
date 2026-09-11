@@ -27,8 +27,7 @@ Given code `FB 20 00`, CRC last value = `B + 20 + 00` = `0x2B`.
 | `FB 16 01 22` | in | MCU_STATE 0x01 | After clicking button P2 (reset). LED blinks to red. |
 | `FB 17 00 22` | out | F1FuncOff | Turn off optional F1 auxiliary relay/function. |
 | `FB 17 01 23` | out | CallF1Func | Turn on optional F1 auxiliary relay/function. This is not the main door opener; Fermax uses F1/F2 for installation-specific extras such as an additional door, lights or lift relay. |
-| `FB 18 04 27` | in | SAVE_ADDR 0x04 | Appears after configuring with button P2 and pressing the intercom button. |
-| `FB 18 5E 81` | in | SAVE_ADDR 0x5e | Unknown. Appears after init. |
+| `FB 18 xx yy` | in | SAVE_ADDR 0xxx | The VDS address the module is programmed with. Reported on `CUART_START` and after a successful address programming. |
 | `FB 19 00 24` | in/out | PUSH_STATE 0x00 | Physical call-forward state off, observed when the WiBox forward button is toggled. Also sent by Sofia `SetPushState(0)`. This is not a doorbell event. |
 | `FB 19 01 25` | in/out | PUSH_STATE 0x01 | Physical call-forward state on. Also sent by Sofia `SetPushState(1)`. The daemon sends this once on boot when serial listening is enabled. This is not a doorbell event. |
 | `FB 20 00 2B` | in | CMD_RESET | After clicking button P1 (wifi) 5 times. Triggers Sofia to delete wifi and reboot. |
@@ -37,6 +36,36 @@ Given code `FB 20 00`, CRC last value = `B + 20 + 00` = `0x2B`.
 | `FB 24 01 30` | in | CMD_DOWN_LONG 0x01 | Physical WiFi long-press stage 1, observed on GK7102S hardware. |
 | `FB 24 02 31` | in | CMD_DOWN_LONG 0x02 | Long-press completion, observed about 3 seconds after stage 1. The custom daemon requires the ordered pair within 10 seconds before requesting AP mode. |
 | `FB 26 00 31` | in | CMD_FAC_SSID_POSTFIX 0x00 | Unknown, received on booting new version B013. |
+
+## Reading the programmed VDS address
+
+Writing `CUART_START` makes the MCU dump its state, which is the only way to read
+back which VDS address the module is programmed with:
+
+```sh
+printf '\xfb\x10\x04\x1f' > /dev/ttySGK1
+# -> FB 18 02 25   VDS address = 2
+#    FB 16 00 21   MCU state
+#    FB 19 01 25   call divert active
+```
+
+The factory default address is `0xF0` (240), so any other value means the module
+has been programmed at some point. The daemon does not send `CUART_START` at
+startup, so the MCU stays quiet until something asks.
+
+## Programming the VDS address
+
+Per the Fermax installer guide (Ref. 3266, cod. 970169): short press (< 2 s) on
+**PB2**, the PWR LED starts blinking red faster (`MCU_STATE_1` on the UART), then
+within **10 seconds** press the **door-release button on the monitor** - not the
+call button on the outdoor panel. The MCU emits `SAVE_ADDR` with the address it
+stored. Entering programming mode also turns the call divert off
+(`PUSH_STATE_0`), so re-enable it afterwards or the module will not report calls.
+
+Note the LEDs are not a reliable indicator here: the right-hand PWR LED follows
+the Fermax table (red slow = no address, red fast = programming, green = address
+set with divert off, blue = divert on), but the left-hand WiFi LED is driven by
+this firmware, not by the MCU. Read the UART log instead.
 
 Other unknown found:
 

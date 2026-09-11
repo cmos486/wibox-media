@@ -18,6 +18,16 @@ over the air.
   clients fall back to TCP), a video-worker lifecycle reconcile (go2rtc's
   probe+reconnect no longer leaves the stream stuck with no worker), and correct
   RTP parsing + reframing of the WebRTC microphone audio into the backchannel.
+- **The VDS bus line follows the RTSP viewers** (`rtsp_intercom_line_enabled`):
+  the MCU only bridges the outdoor panel onto the module while an intercom call
+  line is up, so without it a camera card shows the blue no-signal screen and
+  hears only the noise floor. The daemon now opens the line while clients are
+  connected and releases it afterwards, bounded by an exponential backoff when
+  the MCU refuses it and by a hard `rtsp_intercom_line_max_seconds` cap so a
+  shared bus is never held indefinitely.
+- **Periodic work is scheduled on a monotonic clock**: the device has no RTC and
+  the first NTP sync can step the wall clock backwards by hours, which silently
+  froze the NAT keep-alive and both reconcile loops until it caught up.
 - **A batch of correctness/robustness/security fixes** found by an in-depth
   review (memory safety, threading/locking, RTSP DoS + slot lifecycle, MQTT and
   video-worker races). Most are also proposed upstream as PRs.

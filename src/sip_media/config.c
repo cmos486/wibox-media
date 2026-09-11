@@ -51,6 +51,8 @@ void config_init_defaults(wibox_config_t* config) {
     config->rtsp_port = 8554;
     config->rtsp_auth_user[0] = '\0';
     config->rtsp_auth_pass[0] = '\0';
+    config->rtsp_intercom_line_enabled = 1;
+    config->rtsp_intercom_line_max_seconds = 180;
 
     // Pipe Configuration
     strcpy(config->sip_listen_pipe, "/tmp/pipe_sip");
@@ -179,6 +181,10 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
     } else if (strcmp(key, "rtsp_auth_pass") == 0) {
         strncpy(config->rtsp_auth_pass, value, sizeof(config->rtsp_auth_pass) - 1);
         config->rtsp_auth_pass[sizeof(config->rtsp_auth_pass) - 1] = '\0';
+    } else if (strcmp(key, "rtsp_intercom_line_enabled") == 0) {
+        config->rtsp_intercom_line_enabled = atoi(value);
+    } else if (strcmp(key, "rtsp_intercom_line_max_seconds") == 0) {
+        config->rtsp_intercom_line_max_seconds = atoi(value);
     } else if (strcmp(key, "video_bridge_path") == 0) {
         return 0; /* legacy standalone video bridge config, ignored */
     } else if (strcmp(key, "audio_ai_pipe") == 0) {
@@ -345,6 +351,8 @@ void config_print(const wibox_config_t* config) {
     printf("rtsp_port = %d\n", config->rtsp_port);
     printf("rtsp_auth_user = %s\n", config->rtsp_auth_user);
     printf("rtsp_auth_pass = %s\n", config->rtsp_auth_pass[0] ? "[set]" : "");
+    printf("rtsp_intercom_line_enabled = %d\n", config->rtsp_intercom_line_enabled);
+    printf("rtsp_intercom_line_max_seconds = %d\n", config->rtsp_intercom_line_max_seconds);
     printf("sip_listen_pipe = %s\n", config->sip_listen_pipe);
     printf("ding_message = %s\n", config->ding_message);
     printf("serial_listener_enabled = %d\n", config->serial_listener_enabled);

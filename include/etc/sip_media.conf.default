@@ -26,6 +26,16 @@ rtsp_enabled=0
 rtsp_port=8554
 rtsp_auth_user=
 rtsp_auth_pass=
+# Open the VDS bus line (Fermax auto switch-on) while RTSP/WebRTC clients are
+# watching. Required for the stream to carry the panel audio and video instead
+# of the noise floor and the blue no-signal screen. Set to 0 to leave the bus
+# untouched and only serve what the panel happens to be transmitting.
+rtsp_intercom_line_enabled=1
+# Safety cap: never hold the VDS bus for longer than this, however long a client
+# stays connected (0 disables the cap). On reaching it the line is released and
+# not reopened until every client has disconnected, so a forgotten dashboard
+# card cannot sit on a shared bus forever.
+rtsp_intercom_line_max_seconds=180
 
 # Snapshot Configuration
 ring_snapshot_delay_ms=2000

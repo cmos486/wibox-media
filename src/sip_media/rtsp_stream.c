@@ -557,6 +557,44 @@ static void handle_pause(rtsp_client_t *client, int cseq)
     notify_client_count();
 }
 
+/* G.711 A-law -> linear, for the backchannel level probe below. */
+static int alaw_to_linear(unsigned char a)
+{
+    int magnitude;
+    int segment;
+
+    a ^= 0x55;
+    magnitude = (a & 0x0f) << 4;
+    segment = (a & 0x70) >> 4;
+    if (segment == 0) {
+        magnitude += 8;
+    } else if (segment == 1) {
+        magnitude += 0x108;
+    } else {
+        magnitude = (magnitude + 0x108) << (segment - 1);
+    }
+    return (a & 0x80) ? magnitude : -magnitude;
+}
+
+/* Peak absolute sample of an A-law payload (0..32767). */
+static int alaw_peak_level(const unsigned char *payload, size_t len)
+{
+    int peak = 0;
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        int sample = alaw_to_linear(payload[i]);
+
+        if (sample < 0) {
+            sample = -sample;
+        }
+        if (sample > peak) {
+            peak = sample;
+        }
+    }
+    return peak;
+}
+
 static const char *find_rtsp_header_end(const char *buf, size_t len)
 {
     size_t i;
@@ -658,11 +696,18 @@ static int read_rtsp_request(rtsp_client_t *client, int fd, char *buf, size_t si
                             ao_frame = 160;
                         }
                         if (bc_pkt == 1U || (bc_pkt % 250U == 0U)) {
+                            /* Peak level of what the client is actually sending.
+                             * A muted or misrouted browser microphone still
+                             * produces a steady packet flow, just of silence, so
+                             * the packet count alone cannot tell "talking" from
+                             * "sending nothing". peak~0 means silence arrived. */
                             printf("rtsp: backchannel audio pkt=%u payload=%zu "
-                                   "audio_len=%zu ext=%d pad=%d ao_frame=%zu\n",
+                                   "audio_len=%zu ext=%d pad=%d ao_frame=%zu "
+                                   "peak=%d\n",
                                    bc_pkt, payload_len, audio_len,
                                    (rtp[0] & 0x10) ? 1 : 0,
-                                   (rtp[0] & 0x20) ? 1 : 0, ao_frame);
+                                   (rtp[0] & 0x20) ? 1 : 0, ao_frame,
+                                   alaw_peak_level(rtp + hdr, audio_len));
                         }
                         if (bc_buf_len + audio_len > sizeof(bc_buf)) {
                             bc_buf_len = 0; /* desync guard: drop stale partial */

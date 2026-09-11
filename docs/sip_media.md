@@ -156,6 +156,8 @@ rtsp_enabled=1
 rtsp_port=8554
 rtsp_auth_user=
 rtsp_auth_pass=
+rtsp_intercom_line_enabled=1
+rtsp_intercom_line_max_seconds=180
 ```
 
 URL:
@@ -179,9 +181,38 @@ and PCMA audio.
 
 The RTSP server accepts clients while idle. When a video client is connected and
 global video is enabled, the daemon starts the same D1 H.264 worker used for
-SIP video and tees its RTP packets into RTSP. With no active panel call, the
-video frames may be blue/static; the stream becomes real panel video when the
-outside panel opens its video path during a ring or `START_CALL`.
+SIP video and tees its RTP packets into RTSP.
+
+### The VDS bus line is what makes the stream real
+
+The MCU only bridges the outdoor panel onto the module while an intercom call
+line is up - the Fermax auto switch-on, `START_CALL`. Without it the stream is
+technically fine and carries nothing useful: the encoder sees the blue no-signal
+screen and the audio track carries the bare noise floor (measured on a real
+installation: -44 dBFS with the line closed against -3 dBFS with it open, and a
+flat blue frame compresses to ~6.8 KB against ~36 KB for real panel video).
+
+With `rtsp_intercom_line_enabled=1` (the default) the daemon therefore opens the
+line while RTSP/WebRTC clients are connected and releases it when the last one
+disconnects, so opening a camera card gives real video and live two-way audio.
+The line is opened before the encoder starts, so the first frames already carry
+the panel image.
+
+Three mechanisms bound how long the bus is held, because it is shared with the
+neighbours:
+
+- it is released as soon as the last client disconnects;
+- if the MCU refuses the line (it answers such a `START_CALL` with `HANG_UP_1`
+  about a second later) the daemon backs off 5s, 15s, 60s then 300s instead of
+  retrying every second; a line that had been up and healthy - the panel drops
+  its auto switch-on by itself after roughly 95 seconds - is resumed after 1s;
+- `rtsp_intercom_line_max_seconds` (default 180, 0 disables) is a hard cap: on
+  reaching it the bus is released and not taken again until every client has
+  disconnected, so a dashboard card left streaming cannot sit on the bus forever.
+
+Set `rtsp_intercom_line_enabled=0` to leave the bus untouched and serve only
+whatever the panel happens to be transmitting. A line opened by a real panel call
+or by SIP is never closed by this logic.
 
 There is only one video worker. RTSP "preview" means that this worker is running
 without a SIP RTP target. During an established SIP call, the daemon attaches
