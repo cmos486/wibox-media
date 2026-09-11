@@ -329,7 +329,18 @@ static int test_parsers(void)
                           path, sizeof(path)) == -1);
     CHECK(parse_latest_tag("{\"tag_name\":\"v1.2.3\"}", value, sizeof(value)) == 0);
     CHECK(strcmp(value, "v1.2.3") == 0);
+    /* Pretty-printed, which is how GitHub actually serves it. Matching only
+     * the compact spelling left the device blind to every release. */
+    value[0] = '\0';
+    CHECK(parse_latest_tag("{\n  \"tag_name\": \"v1.2.3\",\n  \"x\": 1\n}",
+                           value, sizeof(value)) == 0);
+    CHECK(strcmp(value, "v1.2.3") == 0);
     CHECK(parse_latest_tag("{}", value, sizeof(value)) == -1);
+    /* The key present but not actually a string field must not be mistaken
+     * for one. */
+    CHECK(parse_latest_tag("{\"tag_name\": null}", value, sizeof(value)) == -1);
+    CHECK(parse_latest_tag("{\"tag_name_suffix\": \"v9.9.9\"}", value,
+                           sizeof(value)) == -1);
     CHECK(parse_md5sum(md5_text, "wibox-media-v1.2.3.img", hash) == 0);
     CHECK(strcmp(hash, "abcdef0123456789abcdef0123456789") == 0);
     CHECK(parse_md5sum(md5_text, "missing.img", hash) == -1);

@@ -612,11 +612,24 @@ static int download_text(const char *url, text_buffer_t *out) {
 }
 
 static int parse_latest_tag(const char *json, char *tag, size_t tag_size) {
-    const char *p = strstr(json, "\"tag_name\":\"");
+    const char *p = strstr(json, "\"tag_name\"");
     const char *end;
     size_t len;
+    /*
+     * Tolerate whitespace around the colon. GitHub serves this endpoint
+     * pretty-printed - `"tag_name": "v0.18.14"` - and matching the compact
+     * spelling instead left the device unable to see any release at all, with
+     * nothing in the log but "unable to query latest release". A device that
+     * cannot see an update is a device somebody has to drive to.
+     */
     if (!p) return -1;
-    p += strlen("\"tag_name\":\"");
+    p += strlen("\"tag_name\"");
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != ':') return -1;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != '"') return -1;
+    p++;
     end = strchr(p, '"');
     if (!end) return -1;
     len = (size_t)(end - p);
