@@ -149,9 +149,23 @@ Everything else, with defaults: **[Runtime configuration](docs/sip_media.md)**.
 
 ### Step 5 — Add it to Home Assistant 🏠
 
-If MQTT discovery is on, the device appears by itself. Nothing to write by hand.
+If MQTT discovery is on, the device appears by itself. Nothing to write by hand,
+no integration to install — it shows up with everything already wired.
 
-![WiBox in Home Assistant](docs/img/homeassistant.png)
+**🎛️ Controls** — what you press. Open the door, take a snapshot, turn video and
+RTSP on or off, set the flat's VDS address, arm a nightly reboot.
+
+![WiBox controls in Home Assistant](docs/img/ha-controls.jpg)
+
+**📊 Sensors** — what it tells you. Call state, health, uptime, firmware
+version, and the snapshot of whoever last rang.
+
+![WiBox sensors in Home Assistant](docs/img/ha-sensors.jpg)
+
+**🔔 Events** — what just happened. Doorbell presses and the raw bus traffic,
+which is what you look at when something is not behaving.
+
+![WiBox events in Home Assistant](docs/img/ha-events.jpg)
 
 ### Step 6 — Tell it which flat it is 🚪
 
@@ -173,7 +187,11 @@ this firmware with the companion card:
 
 👉 **[`wibox-intercom-video-card`](https://github.com/cmos486/wibox-intercom-video-card)**
 
-![WiBox intercom card in Home Assistant](docs/img/intercom-card.png)
+![WiBox intercom card in Home Assistant](docs/img/intercom-card.jpg)
+
+Press and hold to talk, open the door, hang up. `RTC conectado` in the corner
+means the WebRTC path is up — that is the one that carries your voice back to
+the panel; if it ever says `MSe` instead, the stream is view-only.
 
 Setting it up end to end (go2rtc, WebRTC, remote access, talk-back):
 **[Home Assistant two-way audio](docs/homeassistant-two-way-audio.md)**.

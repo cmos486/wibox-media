@@ -347,7 +347,9 @@ See [UART Codes](codes.md) for the full list.
 The daemon publishes Home Assistant discovery using MQTT retained config
 messages.
 
-![WiBox Home Assistant device](img/homeassistant.png)
+![WiBox controls in Home Assistant](img/ha-controls.jpg)
+
+![WiBox sensors in Home Assistant](img/ha-sensors.jpg)
 
 Default base topic:
 
