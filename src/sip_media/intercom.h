@@ -31,6 +31,14 @@ int intercom_init(void);
 int intercom_send_command(intercom_cmd_t cmd);
 
 /**
+ * Send a raw 3-byte command to the MCU, appending the checksum.
+ * Used for the VDS address frames, whose data byte is variable and therefore
+ * cannot live in the fixed command table above.
+ * @return 0 on success, -1 on failure
+ */
+int intercom_send_frame(unsigned char cmd, unsigned char data);
+
+/**
  * Cleanup intercom module
  */
 void intercom_cleanup(void);

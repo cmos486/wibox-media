@@ -42,6 +42,7 @@ typedef struct {
     int rtsp_enabled;
     int developer_mode_enabled;
     int video_bitrate_kbps;
+    int vds_address;
     int sip_outgoing_call_enabled;
     int hangup_on_door_unlock;
     char outgoing_call_target[256];
@@ -1346,6 +1347,10 @@ void mqtt_publish_discovery(void) {
     publish_outgoing_call_timeout_config();
     publish_number_config("ring_snapshot_delay", "Ring Snapshot Delay",
                           "snapshot/ring_delay_ms", 0, 5000, 500, "ms", "timer-outline");
+    /* 250 means "unprogrammed": the MCU reports it after the address is cleared
+     * with five short presses of PB2, and only then does it accept a new one. */
+    publish_number_config("vds_address", "VDS Address", "vds/address",
+                          0, 250, 1, "", "numeric");
     publish_call_forward_switch_config();
 }
 
@@ -1383,6 +1388,14 @@ void mqtt_publish_video_enabled(int enabled) {
 void mqtt_publish_rtsp_enabled(int enabled) {
     mqtt_state.rtsp_enabled = enabled ? 1 : 0;
     publish_suffix("rtsp/enabled", enabled ? "ON" : "OFF", 1);
+}
+
+void mqtt_publish_vds_address(int address) {
+    char value[16];
+
+    mqtt_state.vds_address = address;
+    snprintf(value, sizeof(value), "%d", address);
+    publish_suffix("vds/address", value, 1);
 }
 
 void mqtt_publish_video_bitrate(int bitrate_kbps) {
@@ -1759,6 +1772,15 @@ static void handle_mqtt_message(const char* topic, const char* payload, int reta
             mqtt_state.callbacks.set_rtsp_enabled(1, mqtt_state.user_data);
         } else if (payload_is_off(payload) && mqtt_state.callbacks.set_rtsp_enabled) {
             mqtt_state.callbacks.set_rtsp_enabled(0, mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "vds/address/set");
+    if (strcmp(topic, expected) == 0) {
+        if (parse_int_payload(payload, &int_value) == 0 &&
+            mqtt_state.callbacks.set_vds_address) {
+            mqtt_state.callbacks.set_vds_address(int_value, mqtt_state.user_data);
         }
         return;
     }

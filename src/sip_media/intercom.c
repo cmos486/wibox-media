@@ -86,6 +86,42 @@ int intercom_send_command(intercom_cmd_t cmd) {
     return 0;
 }
 
+int intercom_send_frame(unsigned char cmd, unsigned char data) {
+    /* Checksum is the sum of every byte modulo 240 (confirmed in the stock
+     * firmware's frame builder); with the leading 0xFB that reduces to
+     * cmd + data + 0x0B. */
+    unsigned char frame[4];
+    int fd;
+    ssize_t written;
+
+    if (!intercom_initialized) {
+        printf("Intercom not initialized\n");
+        return -1;
+    }
+
+    frame[0] = 0xFB;
+    frame[1] = cmd;
+    frame[2] = data;
+    frame[3] = (unsigned char)((0xFBu + cmd + data) % 240u);
+
+    fd = open("/dev/ttySGK1", O_WRONLY);
+    if (fd < 0) {
+        printf("Failed to open intercom device: %s\n", strerror(errno));
+        return -1;
+    }
+    written = write(fd, frame, sizeof(frame));
+    close(fd);
+    if (written != (ssize_t)sizeof(frame)) {
+        printf("Failed to write intercom frame: %s\n", strerror(errno));
+        return -1;
+    }
+    printf("Sent intercom frame [%02X %02X %02X %02X]\n",
+           frame[0], frame[1], frame[2], frame[3]);
+    mqtt_publish_uart_event_ex("raw_frame", "RAW_FRAME", "out", frame, 4,
+                               (int)data, 1);
+    return 0;
+}
+
 void intercom_cleanup(void) {
     intercom_initialized = 0;
     printf("Intercom module cleaned up\n");

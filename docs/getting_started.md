@@ -266,6 +266,8 @@ When MQTT is configured, the daemon publishes Home Assistant discovery for:
 - `Video Enabled` switch;
 - `Video Bitrate` and `Outgoing Call Timeout` controls;
 - `Call Forward Enabled` switch;
+- `VDS Address` number: the address the MCU holds (250 = unprogrammed) and, when
+  it holds none, the way to set it - see [UART codes](codes.md#programming-the-vds-address);
 - firmware update available/version sensors;
 - firmware update refresh/install buttons.
 
@@ -295,10 +297,10 @@ If it is wrong, re-run the Fermax address programming flow: short press (< 2 s)
 on **PB2**, then within 10 seconds press the **door-release button on the
 monitor** (not the call button on the outdoor panel). See
 [UART codes](codes.md#programming-the-vds-address) for the details and the
-gotchas. The address cannot be set over the UART - the MCU ignores a written
-`SAVE_ADDR`, and so does the stock firmware's own protocol
-([the complete command set](codes.md#what-the-stock-firmware-can-send-complete)
-contains no address write).
+gotchas. The address can be set from Home Assistant (the **VDS Address** number
+entity) or over the UART, but **only after clearing the old one with five short
+presses of PB2** - the MCU refuses to overwrite an address it already holds and
+reports 250 when it has none.
 
 **Known limitation - programming against a non-VEO terminal.** On a bench with a
 **LOFT VDS** monitor and a CITY CLASSIC VDS pushbutton panel, the documented PB2

@@ -361,6 +361,7 @@ static void mqtt_set_outgoing_call_target_callback(const char* target_uri, void*
 static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* user_data);
 static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
+static void mqtt_set_vds_address_callback(int address, void* user_data);
 static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data);
 static void invalidate_ringing_timeout(const char* reason);
 static void schedule_ringing_timeout(int timeout_seconds);
@@ -2125,6 +2126,31 @@ static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data)
     mqtt_publish_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
 }
 
+static void mqtt_set_vds_address_callback(int address, void* user_data) {
+    (void)user_data;
+
+    if (address < 0 || address > 250) {
+        printf("MQTT vds_address %d out of range (0-250)\n", address);
+        return;
+    }
+    if (!ensure_pj_thread_registered("mqtt_vds_address")) {
+        return;
+    }
+    /*
+     * The MCU only stores this while it holds no address (it reports 250 then).
+     * With one already programmed the same frame behaves as a status query, so
+     * a write that appears to do nothing means the address must be cleared
+     * first with five short presses of PB2.
+     */
+    PJ_LOG(2,(THIS_FILE, "Setting VDS address to %d", address));
+    if (intercom_send_frame(0x10, (unsigned char)address) != 0) {
+        PJ_LOG(2,(THIS_FILE, "Failed to send VDS address frame"));
+        return;
+    }
+    usleep(500000);
+    intercom_send_frame(0x10, 0x04);   /* ask the MCU what it ended up with */
+}
+
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data) {
     intercom_cmd_t cmd = enabled ? INTERCOM_CMD_ENABLE_PUSH_STATE : INTERCOM_CMD_DISABLE_PUSH_STATE;
     (void)user_data;
@@ -2483,6 +2509,23 @@ static void request_wifi_ap_mode(void) {
 
 static void handle_uart_frame(const unsigned char frame[4]) {
     const uart_code_def_t* def = uart_protocol_find(frame);
+
+    /*
+     * SAVE_ADDR carries the programmed VDS address in its data byte, so it
+     * cannot live in the fixed frame table. The MCU reports it on request
+     * (FB 10 04), after the address is programmed, and after it is cleared -
+     * in which case the value is 250, meaning "unprogrammed". That is the only
+     * state in which the MCU accepts a new address over the UART.
+     */
+    if (frame[0] == 0xFB && frame[1] == 0x18) {
+        int address = (int)frame[2];
+
+        PJ_LOG(3,(THIS_FILE, "VDS address reported by MCU: %d%s",
+                  address, address == 250 ? " (unprogrammed)" : ""));
+        mqtt_publish_uart_event("save_addr", "SAVE_ADDR", frame, 4, address, 1);
+        mqtt_publish_vds_address(address);
+        return;
+    }
 
     if (!def) {
         prometheus_inc_uart_unknown_frame();
@@ -3301,6 +3344,7 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.set_ring_snapshot_delay = mqtt_set_ring_snapshot_delay_callback;
     mqtt_callbacks.set_call_forward_enabled = mqtt_set_call_forward_enabled_callback;
     mqtt_callbacks.set_rtsp_enabled = mqtt_set_rtsp_enabled_callback;
+    mqtt_callbacks.set_vds_address = mqtt_set_vds_address_callback;
     mqtt_init(&app_config, local_ip, &mqtt_callbacks, NULL);
     if (app_config.prometheus_enabled && prometheus_start(app_config.prometheus_port) < 0) {
         printf("Warning: Failed to start Prometheus exporter\n");
@@ -3325,6 +3369,10 @@ int main(int argc, char *argv[]) {
     } else if (app_config.serial_listener_enabled) {
         printf("Enabling intercom physical doorbell push state\n");
         intercom_send_command(INTERCOM_CMD_ENABLE_PUSH_STATE);
+        /* Ask the MCU for its VDS address so Home Assistant shows it from the
+         * start; the reply arrives as a SAVE_ADDR frame on the serial thread. */
+        usleep(200000);
+        intercom_send_frame(0x10, 0x04);
     }
 
     // Initialize PJLIB

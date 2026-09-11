@@ -65,10 +65,16 @@ names and line numbers come from the binary's own error strings
 | `FB 19 xx` | 477 | `SetPushState` |
 | `FB 25 xx` | 607 | `NoticeLedTest` |
 
-**There is no command that writes the VDS address.** Not even Fermax's own app
-programs it over the UART, which is why no amount of poking sets it: `FB 18 xx`
-(SAVE_ADDR) is report-only, and `FB 10 xx` is ignored by the MCU both when idle
-and while in address programming mode.
+**`FB 10 xx` writes the VDS address, but only while the MCU holds none.** That
+single rule explains why the frame looks inert most of the time: with an address
+already stored it behaves as a plain status query, which is exactly what the
+stock app relies on - it announces its configured address at every start-up
+(`CUart::Start` then `FB 10 <addr>`) and the MCU keeps whatever it already had.
+`FB 18 xx` (SAVE_ADDR) is report-only and carries the address the MCU holds;
+**250 (0xFA) means unprogrammed**.
+
+See [Programming the VDS address](#programming-the-vds-address) for the full
+procedure.
 
 ## Reading the programmed VDS address
 
@@ -88,12 +94,47 @@ startup, so the MCU stays quiet until something asks.
 
 ## Programming the VDS address
 
-Per the Fermax installer guide (Ref. 3266, cod. 970169): short press (< 2 s) on
-**PB2**, the PWR LED starts blinking red faster (`MCU_STATE_1` on the UART), then
-within **10 seconds** press the **door-release button on the monitor** - not the
-call button on the outdoor panel. The MCU emits `SAVE_ADDR` with the address it
-stored. Entering programming mode also turns the call divert off
-(`PUSH_STATE_0`), so re-enable it afterwards or the module will not report calls.
+The address lives in the MCU and survives firmware changes, so it must be dealt
+with on its own terms. **The MCU only accepts a new address while it holds none**,
+and it reports that empty state as address **250**.
+
+### Clearing it: five short presses of PB2
+
+The only way found to clear it. The MCU then reports:
+
+```text
+FB 18 FA    SAVE_ADDR 250   -> unprogrammed
+FB 19 00    call divert off
+FB 20 00    CMD_RESET
+```
+
+The PWR LED goes red. Note `CMD_RESET` makes this daemon reboot, and the boot
+runs Fermax's `Sofia_temp.sh` warm-up, whose Sofia writes its own configured
+address straight back into the freshly emptied MCU. To keep it empty, stop the
+daemon **and disarm the hardware watchdog** first (`printf 'V' > /dev/watchdog`,
+or it reboots about 30 s later).
+
+### Setting it
+
+Either from Home Assistant - the **VDS Address** number entity, which also shows
+the current value - or over the UART:
+
+```sh
+printf '\xfb\x10\x01\x1c' > /dev/ttySGK1   # address 1; checksum = cmd + data + 0x0B
+printf '\xfb\x10\x04\x1f' > /dev/ttySGK1   # verify: the MCU answers FB 18 <addr>
+```
+
+`~/wibox/lab-set-vds-addr.sh <n>` does the whole thing including the watchdog
+disarm. Once stored, the address survives reboots: the warm-up's `FB 10 xx` is
+ignored from then on.
+
+### Learning it from the installation instead
+
+If the flat's call code is unknown, the Fermax procedure can supply it, and it
+needs the same empty MCU: short press (< 2 s) on **PB2**, the PWR LED blinks red
+faster (`MCU_STATE_1`), then within **10 seconds** press the **door-release button
+on the monitor** - not the call button on the outdoor panel. Entering programming
+mode also turns the divert off, and this daemon restores it on exit.
 
 Note the LEDs are not a reliable indicator here: the right-hand PWR LED follows
 the Fermax table (red slow = no address, red fast = programming, green = address

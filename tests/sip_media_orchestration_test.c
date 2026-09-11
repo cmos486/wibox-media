@@ -552,6 +552,9 @@ int intercom_send_command(intercom_cmd_t command) {
     intercom_counts[command]++;
     return (int)command == intercom_fail_command ? -1 : 0;
 }
+int intercom_send_frame(unsigned char cmd, unsigned char data) {
+    (void)cmd; (void)data; return 0;
+}
 void intercom_cleanup(void) {}
 
 int mqtt_init(const wibox_config_t *configuration, const char *ip,
@@ -576,6 +579,7 @@ void mqtt_publish_outgoing_call_target(const char *target) { (void)target; }
 void mqtt_publish_outgoing_call_timeout(int timeout) { (void)timeout; }
 void mqtt_publish_ring_snapshot_delay(int delay) { (void)delay; }
 void mqtt_publish_call_forward_enabled(int enabled) { (void)enabled; }
+void mqtt_publish_vds_address(int address) { (void)address; }
 void mqtt_publish_rtsp_enabled(int enabled) { (void)enabled; }
 void mqtt_publish_media_state(const char *state) {
     mqtt_media_state_count++;

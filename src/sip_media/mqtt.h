@@ -21,6 +21,7 @@ typedef struct {
     void (*set_ring_snapshot_delay)(int delay_ms, void* user_data);
     void (*set_call_forward_enabled)(int enabled, void* user_data);
     void (*set_rtsp_enabled)(int enabled, void* user_data);
+    void (*set_vds_address)(int address, void* user_data);
 } mqtt_callbacks_t;
 
 int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
@@ -38,6 +39,7 @@ void mqtt_publish_sip_call_active(int active);
 void mqtt_publish_video_active(int active);
 void mqtt_publish_video_enabled(int enabled);
 void mqtt_publish_video_bitrate(int bitrate_kbps);
+void mqtt_publish_vds_address(int address);
 void mqtt_publish_sip_outgoing_call_enabled(int enabled);
 void mqtt_publish_hangup_on_door_unlock(int enabled);
 void mqtt_publish_outgoing_call_target(const char* target_uri);
