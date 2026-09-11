@@ -36,6 +36,15 @@ rtsp_intercom_line_enabled=1
 # not reopened until every client has disconnected, so a forgotten dashboard
 # card cannot sit on a shared bus forever.
 rtsp_intercom_line_max_seconds=180
+# Time zone, POSIX TZ string. The board has no /etc/TZ and its clock has been
+# seen alternating between UTC and local time, so the daemon sets it itself.
+# Peninsular Spain by default; UK would be GMT0BST,M3.5.0/1,M10.5.0
+timezone=CET-1CEST,M3.5.0,M10.5.0/3
+# Optional scheduled reboot, in local time. Skipped while a call is up or
+# clients are streaming, and retried for an hour after the slot. Off by default.
+daily_reboot_enabled=0
+daily_reboot_hour=4
+daily_reboot_minute=0
 
 # Snapshot Configuration
 ring_snapshot_delay_ms=2000

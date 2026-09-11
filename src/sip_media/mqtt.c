@@ -43,6 +43,8 @@ typedef struct {
     int developer_mode_enabled;
     int video_bitrate_kbps;
     int vds_address;
+    int daily_reboot_enabled;
+    int daily_reboot_hour;
     int sip_outgoing_call_enabled;
     int hangup_on_door_unlock;
     char outgoing_call_target[256];
@@ -1011,6 +1013,30 @@ static void publish_video_switch_config(void) {
     mqtt_publish_raw(topic, payload, 1);
 }
 
+static void publish_daily_reboot_switch_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char command_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[1536];
+
+    discovery_topic(topic, sizeof(topic), "switch", "daily_reboot");
+    topic_path(state_topic, sizeof(state_topic), "maintenance/daily_reboot");
+    topic_path(command_topic, sizeof(command_topic), "maintenance/daily_reboot/set");
+    unique_id(uid, sizeof(uid), "daily_reboot");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Daily Reboot\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
+             "\"availability_topic\":\"%s\",\"payload_on\":\"ON\","
+             "\"payload_off\":\"OFF\",\"retain\":true,"
+             "\"icon\":\"mdi:restart-alert\",%s}",
+             uid, state_topic, command_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_rtsp_switch_config(void) {
     char topic[256];
     char state_topic[256];
@@ -1379,6 +1405,10 @@ void mqtt_publish_discovery(void) {
                           0, 250, 1, "", "numeric", "box");
     publish_call_forward_switch_config();
     publish_health_config();
+    publish_daily_reboot_switch_config();
+    publish_number_config("daily_reboot_hour", "Daily Reboot Hour",
+                          "maintenance/daily_reboot_hour", 0, 23, 1, "h",
+                          "clock-outline", "box");
     publish_sensor_config("health_detail", "Health Detail", "health/detail",
                           "", "stethoscope");
 }
@@ -1417,6 +1447,19 @@ void mqtt_publish_video_enabled(int enabled) {
 void mqtt_publish_rtsp_enabled(int enabled) {
     mqtt_state.rtsp_enabled = enabled ? 1 : 0;
     publish_suffix("rtsp/enabled", enabled ? "ON" : "OFF", 1);
+}
+
+void mqtt_publish_daily_reboot_enabled(int enabled) {
+    mqtt_state.daily_reboot_enabled = enabled ? 1 : 0;
+    publish_suffix("maintenance/daily_reboot", enabled ? "ON" : "OFF", 1);
+}
+
+void mqtt_publish_daily_reboot_hour(int hour) {
+    char value[16];
+
+    mqtt_state.daily_reboot_hour = hour;
+    snprintf(value, sizeof(value), "%d", hour);
+    publish_suffix("maintenance/daily_reboot_hour", value, 1);
 }
 
 void mqtt_publish_health(int ok, const char* detail) {
@@ -1810,6 +1853,25 @@ static void handle_mqtt_message(const char* topic, const char* payload, int reta
         return;
     }
 
+    topic_path(expected, sizeof(expected), "maintenance/daily_reboot/set");
+    if (strcmp(topic, expected) == 0) {
+        if (payload_is_on(payload) && mqtt_state.callbacks.set_daily_reboot_enabled) {
+            mqtt_state.callbacks.set_daily_reboot_enabled(1, mqtt_state.user_data);
+        } else if (payload_is_off(payload) && mqtt_state.callbacks.set_daily_reboot_enabled) {
+            mqtt_state.callbacks.set_daily_reboot_enabled(0, mqtt_state.user_data);
+        }
+        return;
+    }
+
+    topic_path(expected, sizeof(expected), "maintenance/daily_reboot_hour/set");
+    if (strcmp(topic, expected) == 0) {
+        if (parse_int_payload(payload, &int_value) == 0 &&
+            mqtt_state.callbacks.set_daily_reboot_hour) {
+            mqtt_state.callbacks.set_daily_reboot_hour(int_value, mqtt_state.user_data);
+        }
+        return;
+    }
+
     topic_path(expected, sizeof(expected), "vds/address/set");
     if (strcmp(topic, expected) == 0) {
         if (parse_int_payload(payload, &int_value) == 0 &&
@@ -1933,6 +1995,8 @@ static int mqtt_subscribe_topics(void) {
         "call/timeout_seconds/set",
         "call_forward/enabled/set",
         "vds/address/set",
+        "maintenance/daily_reboot/set",
+        "maintenance/daily_reboot_hour/set",
         "firmware/update/install/set",
         "firmware/update/check/set"
     };

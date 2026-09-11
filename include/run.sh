@@ -94,10 +94,14 @@ touch /tmp/heartbeat.lock
 # cron
 CRONTABS="/var/spool/cron/crontabs"
 mkdir -p ${CRONTABS}
+# No hidden reboot here. The stock image rebooted every Saturday at 03:15 from
+# cron, with no way to see it, change it, or stop it cutting a call in half -
+# and with an unsynchronised clock that made the hour meaningless anyway. The
+# daemon now offers a scheduled reboot instead: off by default, set from Home
+# Assistant, and skipped while the intercom is in use.
 cat << EOF >> ${CRONTABS}/root
-15 3 * * 6 reboot
 */10 * * * * /usr/bin/heartbeat.sh
-0 * * * * ntpd -q -p pool.ntp.org
+0 * * * * busybox ntpd -q -n -p pool.ntp.org
 * * * * * dmesg -c | grep -v RTL871X >> /var/messages
 EOF
 if [ -f "/mnt/mtd/crontab" ]; then
@@ -111,6 +115,15 @@ RUN_SOFIA=$(strings /dev/mtdblock1 | grep -E "^sofia=" | cut -d '=' -f2)
 if [ -z "${RUN_SOFIA}" ] || [ "${RUN_SOFIA}" != "0" ]; then
   timeout -t 180 /usr/bin/Sofia_temp.sh
 fi
+
+# Time sync, and it has to be here: the stock crontab calls a bare `ntpd`, which
+# does not exist as an executable on this board - it is a busybox applet nobody
+# linked into PATH - so the clock was never synchronised, and the Sofia warm-up
+# just above leaves local time behind labelled as UTC. Syncing before the warm-up
+# would be undone by it. This is where the jumping log timestamps came from.
+# Not fatal if it fails: every interval that matters uses a monotonic clock, and
+# only the scheduled reboot reads wall time.
+(busybox ntpd -q -n -p pool.ntp.org >/dev/null 2>&1 &)
 
 WIFI_MODE=$(/usr/bin/wifi_mode.sh)
 if [ "$WIFI_MODE" = "ap" ]; then

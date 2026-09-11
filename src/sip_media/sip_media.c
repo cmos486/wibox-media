@@ -97,6 +97,21 @@ static pthread_mutex_t audio_health_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int audio_input_peak = 0;            /* peak seen since last check */
 static unsigned long long audio_silent_since_ms = 0;
 static int audio_recovery_attempts = 0;
+/* Last state pushed to MQTT, so the entity is refreshed on change and often
+ * enough to survive a broker reconnect without chattering. */
+static int health_last_ok = -1;
+static unsigned long long health_last_publish_ms = 0;
+static int maintenance_state_published = 0;
+
+static void publish_health_state(int ok, const char* detail,
+                                 unsigned long long now) {
+    if (ok == health_last_ok && now - health_last_publish_ms < 60000ULL) {
+        return;
+    }
+    health_last_ok = ok;
+    health_last_publish_ms = now;
+    mqtt_publish_health(ok, detail);
+}
 
 /* Guards rtsp_line_opened_by_us. Lock order: rtsp_line_mutex before
  * intercom_command_mutex (taken inside ensure_intercom_call_open); nothing
@@ -379,6 +394,8 @@ static void mqtt_set_outgoing_call_timeout_callback(int timeout_seconds, void* u
 static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data);
 static void mqtt_set_call_forward_enabled_callback(int enabled, void* user_data);
 static void mqtt_set_vds_address_callback(int address, void* user_data);
+static void mqtt_set_daily_reboot_enabled_callback(int enabled, void* user_data);
+static void mqtt_set_daily_reboot_hour_callback(int hour, void* user_data);
 static void mqtt_set_rtsp_enabled_callback(int enabled, void* user_data);
 static void invalidate_ringing_timeout(const char* reason);
 static void schedule_ringing_timeout(int timeout_seconds);
@@ -2143,6 +2160,33 @@ static void mqtt_set_ring_snapshot_delay_callback(int delay_ms, void* user_data)
     mqtt_publish_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
 }
 
+static void mqtt_set_daily_reboot_enabled_callback(int enabled, void* user_data) {
+    (void)user_data;
+
+    app_config.daily_reboot_enabled = enabled ? 1 : 0;
+    /* Persisted: a scheduled reboot that forgot it was enabled would switch
+     * itself off the first time it fired. */
+    config_set_value(CONFIG_FILE, "daily_reboot_enabled",
+                     app_config.daily_reboot_enabled ? "1" : "0");
+    printf("MQTT daily_reboot_enabled set to %d\n", app_config.daily_reboot_enabled);
+    mqtt_publish_daily_reboot_enabled(app_config.daily_reboot_enabled);
+}
+
+static void mqtt_set_daily_reboot_hour_callback(int hour, void* user_data) {
+    char value[8];
+
+    (void)user_data;
+    if (hour < 0 || hour > 23) {
+        printf("MQTT daily_reboot_hour %d out of range\n", hour);
+        return;
+    }
+    app_config.daily_reboot_hour = hour;
+    snprintf(value, sizeof(value), "%d", hour);
+    config_set_value(CONFIG_FILE, "daily_reboot_hour", value);
+    printf("MQTT daily_reboot_hour set to %d\n", hour);
+    mqtt_publish_daily_reboot_hour(hour);
+}
+
 static void mqtt_set_vds_address_callback(int address, void* user_data) {
     (void)user_data;
 
@@ -3338,12 +3382,41 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /*
+     * The board ships without /etc/TZ, so everything runs in UTC while its
+     * clock is repeatedly reset: Fermax's warm-up leaves local time behind at
+     * boot and the hourly ntpd in cron puts real UTC back, which is where the
+     * two-hour jumps in the logs come from. Pin the zone for this process and
+     * publish it in /etc (a writable ramfs copy) so the rest of the system and
+     * the log timestamps agree. Wall time is only used for the scheduled
+     * reboot; every interval in the main loop is monotonic and unaffected.
+     */
+    if (app_config.timezone[0]) {
+        FILE* tz_file;
+
+        setenv("TZ", app_config.timezone, 1);
+        tzset();
+        tz_file = fopen("/etc/TZ", "w");
+        if (tz_file) {
+            fprintf(tz_file, "%s\n", app_config.timezone);
+            fclose(tz_file);
+        } else {
+            printf("Warning: could not write /etc/TZ: %s\n", strerror(errno));
+        }
+    }
+
     app_config.ring_snapshot_delay_ms = clamp_ring_snapshot_delay(app_config.ring_snapshot_delay_ms);
     app_config.video_recording_max_seconds = clamp_recording_max_seconds(app_config.video_recording_max_seconds);
     if (app_config.intercom_reopen_guard_ms < 0) {
         app_config.intercom_reopen_guard_ms = 0;
     } else if (app_config.intercom_reopen_guard_ms > 5000) {
         app_config.intercom_reopen_guard_ms = 5000;
+    }
+    if (app_config.daily_reboot_hour < 0 || app_config.daily_reboot_hour > 23) {
+        app_config.daily_reboot_hour = 4;
+    }
+    if (app_config.daily_reboot_minute < 0 || app_config.daily_reboot_minute > 59) {
+        app_config.daily_reboot_minute = 0;
     }
     if (app_config.hardware_watchdog_timeout_seconds < 5) {
         app_config.hardware_watchdog_timeout_seconds = 5;
@@ -3386,6 +3459,8 @@ int main(int argc, char *argv[]) {
     mqtt_callbacks.set_call_forward_enabled = mqtt_set_call_forward_enabled_callback;
     mqtt_callbacks.set_rtsp_enabled = mqtt_set_rtsp_enabled_callback;
     mqtt_callbacks.set_vds_address = mqtt_set_vds_address_callback;
+    mqtt_callbacks.set_daily_reboot_enabled = mqtt_set_daily_reboot_enabled_callback;
+    mqtt_callbacks.set_daily_reboot_hour = mqtt_set_daily_reboot_hour_callback;
     mqtt_init(&app_config, local_ip, &mqtt_callbacks, NULL);
     if (app_config.prometheus_enabled && prometheus_start(app_config.prometheus_port) < 0) {
         printf("Warning: Failed to start Prometheus exporter\n");
@@ -3525,13 +3600,14 @@ int main(int argc, char *argv[]) {
            app_config.sip_outgoing_call_enabled ? "enabled" : "disabled",
            app_config.outgoing_call_target);
     printf("Send '%s' to %s to trigger outgoing call\n", app_config.ding_message, app_config.sip_listen_pipe);
-    mqtt_publish_health(1, "ok");
 
     // Main event loop
     unsigned long long last_nat_keepalive = monotonic_ms();
     unsigned long long last_video_reconcile = monotonic_ms();
     unsigned long long last_line_reconcile = monotonic_ms();
     unsigned long long last_audio_health_check = monotonic_ms();
+    unsigned long long last_reboot_check = monotonic_ms();
+    int last_reboot_yday = -1;
 
     while (!quit_flag) {
         pj_time_val timeout = {0, 100};
@@ -3599,13 +3675,19 @@ int main(int argc, char *argv[]) {
             if (!engine_on || !listeners) {
                 audio_silent_since_ms = 0;
                 audio_recovery_attempts = 0;
+                publish_health_state(1, "ok", now);
+                if (!maintenance_state_published) {
+                    maintenance_state_published = 1;
+                    mqtt_publish_daily_reboot_enabled(app_config.daily_reboot_enabled);
+                    mqtt_publish_daily_reboot_hour(app_config.daily_reboot_hour);
+                }
             } else if (peak > AUDIO_SILENCE_PEAK_MIN) {
                 if (audio_silent_since_ms != 0) {
                     PJ_LOG(3,(THIS_FILE, "Audio input recovered (peak=%d)", peak));
-                    mqtt_publish_health(1, "ok");
                 }
                 audio_silent_since_ms = 0;
                 audio_recovery_attempts = 0;
+                publish_health_state(1, "ok", now);
             } else {
                 if (audio_silent_since_ms == 0) {
                     audio_silent_since_ms = now;
@@ -3617,7 +3699,7 @@ int main(int argc, char *argv[]) {
                               "(peak=%d); recovery attempt %d",
                               AUDIO_SILENCE_FAULT_MS / 1000ULL, peak,
                               audio_recovery_attempts));
-                    mqtt_publish_health(0, "audio input silent");
+                    publish_health_state(0, "audio input silent", now);
                     if (audio_recovery_attempts == 1) {
                         stop_audio_engine("audio-silent");
                         usleep(500000);
@@ -3626,7 +3708,47 @@ int main(int argc, char *argv[]) {
                         PJ_LOG(1,(THIS_FILE,
                                   "Audio input still silent after %d attempts; "
                                   "rebooting", audio_recovery_attempts));
-                        mqtt_publish_health(0, "audio input silent - rebooting");
+                        publish_health_state(0, "audio input silent - rebooting", now);
+                        sync();
+                        reboot(RB_AUTOBOOT);
+                    }
+                }
+            }
+        }
+
+        /*
+         * Scheduled reboot, in local time. Wall-clock based by nature, so it
+         * refuses to act on an obviously wrong clock, remembers the day it last
+         * fired so a clock jump cannot make it loop, and never cuts anyone off:
+         * if a call is up or clients are streaming it simply waits, retrying
+         * through the hour that follows the slot.
+         */
+        if (app_config.daily_reboot_enabled &&
+            (now - last_reboot_check >= 30000ULL)) {
+            time_t wall = time(NULL);
+            struct tm local;
+
+            last_reboot_check = now;
+            if (wall > 1700000000 && localtime_r(&wall, &local) != NULL) {
+                int minutes_now = local.tm_hour * 60 + local.tm_min;
+                int minutes_due = app_config.daily_reboot_hour * 60 +
+                                  app_config.daily_reboot_minute;
+                int due = minutes_now >= minutes_due &&
+                          minutes_now < minutes_due + 60;
+
+                if (due && local.tm_yday != last_reboot_yday) {
+                    if (sip_calling_is_call_active() ||
+                        rtsp_stream_get_video_client_count() > 0 ||
+                        rtsp_stream_get_audio_client_count() > 0) {
+                        PJ_LOG(3,(THIS_FILE,
+                                  "Scheduled reboot due but the intercom is in "
+                                  "use; waiting"));
+                    } else {
+                        last_reboot_yday = local.tm_yday;
+                        PJ_LOG(2,(THIS_FILE,
+                                  "Scheduled reboot at %02d:%02d local time",
+                                  local.tm_hour, local.tm_min));
+                        mqtt_publish_health(1, "scheduled reboot");
                         sync();
                         reboot(RB_AUTOBOOT);
                     }

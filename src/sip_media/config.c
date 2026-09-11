@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #define THIS_FILE "config"
 
@@ -53,6 +54,12 @@ void config_init_defaults(wibox_config_t* config) {
     config->rtsp_auth_pass[0] = '\0';
     config->rtsp_intercom_line_enabled = 1;
     config->rtsp_intercom_line_max_seconds = 180;
+    /* The board has no /etc/TZ and its clock drifts between UTC and local time,
+     * so the daemon sets the zone itself; this default is peninsular Spain. */
+    strcpy(config->timezone, "CET-1CEST,M3.5.0,M10.5.0/3");
+    config->daily_reboot_enabled = 0;
+    config->daily_reboot_hour = 4;
+    config->daily_reboot_minute = 0;
 
     // Pipe Configuration
     strcpy(config->sip_listen_pipe, "/tmp/pipe_sip");
@@ -185,6 +192,15 @@ static int parse_config_line(const char* line, wibox_config_t* config) {
         config->rtsp_intercom_line_enabled = atoi(value);
     } else if (strcmp(key, "rtsp_intercom_line_max_seconds") == 0) {
         config->rtsp_intercom_line_max_seconds = atoi(value);
+    } else if (strcmp(key, "timezone") == 0) {
+        strncpy(config->timezone, value, sizeof(config->timezone) - 1);
+        config->timezone[sizeof(config->timezone) - 1] = '\0';
+    } else if (strcmp(key, "daily_reboot_enabled") == 0) {
+        config->daily_reboot_enabled = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "daily_reboot_hour") == 0) {
+        config->daily_reboot_hour = atoi(value);
+    } else if (strcmp(key, "daily_reboot_minute") == 0) {
+        config->daily_reboot_minute = atoi(value);
     } else if (strcmp(key, "video_bridge_path") == 0) {
         return 0; /* legacy standalone video bridge config, ignored */
     } else if (strcmp(key, "audio_ai_pipe") == 0) {
@@ -353,6 +369,10 @@ void config_print(const wibox_config_t* config) {
     printf("rtsp_auth_pass = %s\n", config->rtsp_auth_pass[0] ? "[set]" : "");
     printf("rtsp_intercom_line_enabled = %d\n", config->rtsp_intercom_line_enabled);
     printf("rtsp_intercom_line_max_seconds = %d\n", config->rtsp_intercom_line_max_seconds);
+    printf("timezone = %s\n", config->timezone);
+    printf("daily_reboot_enabled = %d\n", config->daily_reboot_enabled);
+    printf("daily_reboot_hour = %d\n", config->daily_reboot_hour);
+    printf("daily_reboot_minute = %d\n", config->daily_reboot_minute);
     printf("sip_listen_pipe = %s\n", config->sip_listen_pipe);
     printf("ding_message = %s\n", config->ding_message);
     printf("serial_listener_enabled = %d\n", config->serial_listener_enabled);
@@ -381,4 +401,48 @@ void config_print(const wibox_config_t* config) {
     printf("audio_output_volume_percent = %d\n", config->audio_output_volume_percent);
     printf("audio_line_mute_ms = %d\n", config->audio_line_mute_ms);
     printf("============================\n");
+}
+
+int config_set_value(const char* path, const char* key, const char* value) {
+    char tmp_path[512];
+    char line[512];
+    FILE* in;
+    FILE* out;
+    int replaced = 0;
+    size_t key_len;
+
+    if (!path || !key || !value) return -1;
+    key_len = strlen(key);
+
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    out = fopen(tmp_path, "w");
+    if (!out) return -1;
+
+    in = fopen(path, "r");
+    if (in) {
+        while (fgets(line, sizeof(line), in)) {
+            char* trimmed = line;
+            while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
+            if (strncmp(trimmed, key, key_len) == 0 && trimmed[key_len] == '=') {
+                fprintf(out, "%s=%s\n", key, value);
+                replaced = 1;
+            } else {
+                fputs(line, out);
+            }
+        }
+        fclose(in);
+    }
+    if (!replaced) {
+        fprintf(out, "%s=%s\n", key, value);
+    }
+    fflush(out);
+    fsync(fileno(out));
+    fclose(out);
+
+    if (rename(tmp_path, path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    sync();
+    return 0;
 }

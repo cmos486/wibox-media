@@ -29,6 +29,12 @@ typedef struct {
     int rtsp_intercom_line_enabled;
     int rtsp_intercom_line_max_seconds;
 
+    // Time and scheduled maintenance
+    char timezone[64];
+    int daily_reboot_enabled;
+    int daily_reboot_hour;
+    int daily_reboot_minute;
+
     // Pipe Configuration
     char sip_listen_pipe[256];
 
@@ -89,5 +95,13 @@ void config_init_defaults(wibox_config_t* config);
  * @param config Pointer to configuration structure
  */
 void config_print(const wibox_config_t* config);
+
+/**
+ * Rewrite a single key in the config file, adding it if missing.
+ * Needed by settings that must survive a reboot - a scheduled reboot that
+ * forgets it is enabled would disable itself the first time it fires.
+ * @return 0 on success, -1 on failure
+ */
+int config_set_value(const char* path, const char* key, const char* value);
 
 #endif // CONFIG_H

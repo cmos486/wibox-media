@@ -22,6 +22,8 @@ typedef struct {
     void (*set_call_forward_enabled)(int enabled, void* user_data);
     void (*set_rtsp_enabled)(int enabled, void* user_data);
     void (*set_vds_address)(int address, void* user_data);
+    void (*set_daily_reboot_enabled)(int enabled, void* user_data);
+    void (*set_daily_reboot_hour)(int hour, void* user_data);
 } mqtt_callbacks_t;
 
 int mqtt_init(const wibox_config_t* app_config, const char* local_ip,
@@ -42,6 +44,8 @@ void mqtt_publish_video_bitrate(int bitrate_kbps);
 void mqtt_publish_vds_address(int address);
 /* Overall health for Home Assistant: ok=1 plus a short reason when not. */
 void mqtt_publish_health(int ok, const char* detail);
+void mqtt_publish_daily_reboot_enabled(int enabled);
+void mqtt_publish_daily_reboot_hour(int hour);
 void mqtt_publish_sip_outgoing_call_enabled(int enabled);
 void mqtt_publish_hangup_on_door_unlock(int enabled);
 void mqtt_publish_outgoing_call_target(const char* target_uri);
