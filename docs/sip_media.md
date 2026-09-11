@@ -201,8 +201,8 @@ safeguards worth knowing:
   `Scheduled reboot due but the intercom is in use; waiting` and retries through
   the rest of the hour.
 
-Both are also exposed to Home Assistant as **Daily Reboot** (switch) and **Daily
-Reboot Hour** (number), and changes made there are written back to
+Both are also exposed to Home Assistant as **Daily Reboot** (switch) and
+**Daily Reboot Hour** (number), and changes made there are written back to
 `sip_media.conf` - a reboot that forgot it was scheduled would switch itself off
 every time it ran.
 
@@ -604,7 +604,7 @@ logs to flash.
 
 ## Local Test API
 
-The daemon creates a FIFO:
+The daemon creates a FIFO (`sip_listen_pipe`, default below):
 
 ```text
 /tmp/pipe_sip
