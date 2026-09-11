@@ -147,7 +147,25 @@ video_recording_max_seconds=30
 At `4096` kbps, 30 seconds is about 15 MiB. That only fits in `/tmp` with little
 headroom and must never be written to `/mnt/mtd` or other flash-backed storage.
 
-## Experimental RTSP Stream
+## Health monitoring
+
+The daemon is restarted by `app_watchdog.sh` if it dies and the board is rebooted
+by the hardware watchdog if the main loop stalls, but neither notices the failure
+mode that actually bites: **a subsystem that is alive and reports success while
+doing nothing**. The audio capture has been seen doing exactly that after the
+daemon was killed abruptly or the board reset mid-flight - the engine running,
+packets flowing, every sample digital silence, and nothing in the log to suggest
+a problem.
+
+So the captured audio is measured. While the engine is running and RTSP clients
+are listening, the peak deviation of each frame from the A-law zero level is
+tracked; real audio - even room noise on an idle bus - sits well above the
+threshold. Twenty seconds of flat silence is treated as a fault: the audio engine
+is restarted, and if that does not bring it back the board reboots, which is what
+it took the one time this was seen. Recovery is logged and the state published.
+
+Home Assistant gets a `Health` problem binary sensor and a `Health Detail`
+sensor, so a mute stream shows up as a fault instead of as a puzzled user.
 
 The daemon can expose an RTSP/TCP interleaved stream for go2rtc, Frigate or VLC:
 

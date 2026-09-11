@@ -580,6 +580,7 @@ void mqtt_publish_outgoing_call_timeout(int timeout) { (void)timeout; }
 void mqtt_publish_ring_snapshot_delay(int delay) { (void)delay; }
 void mqtt_publish_call_forward_enabled(int enabled) { (void)enabled; }
 void mqtt_publish_vds_address(int address) { (void)address; }
+void mqtt_publish_health(int ok, const char *detail) { (void)ok; (void)detail; }
 void mqtt_publish_rtsp_enabled(int enabled) { (void)enabled; }
 void mqtt_publish_media_state(const char *state) {
     mqtt_media_state_count++;

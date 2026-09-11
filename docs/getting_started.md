@@ -266,6 +266,8 @@ When MQTT is configured, the daemon publishes Home Assistant discovery for:
 - `Video Enabled` switch;
 - `Video Bitrate` and `Outgoing Call Timeout` controls;
 - `Call Forward Enabled` switch;
+- `Health` problem binary sensor and `Health Detail` sensor: flags a subsystem
+  that is running but not working, such as an audio capture gone silent;
 - `VDS Address` number: the address the MCU holds (250 = unprogrammed) and, when
   it holds none, the way to set it - see [UART codes](codes.md#programming-the-vds-address);
 - firmware update available/version sensors;

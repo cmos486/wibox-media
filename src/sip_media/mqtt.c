@@ -1079,6 +1079,29 @@ static void publish_hangup_on_door_unlock_switch_config(void) {
     mqtt_publish_raw(topic, payload, 1);
 }
 
+/* A problem/ok binary sensor so a broken subsystem is visible in Home
+ * Assistant instead of only showing up as "the audio sounds mute". */
+static void publish_health_config(void) {
+    char topic[256];
+    char state_topic[256];
+    char uid[192];
+    char dev[512];
+    char payload[2048];
+
+    discovery_topic(topic, sizeof(topic), "binary_sensor", "health");
+    topic_path(state_topic, sizeof(state_topic), "health/state");
+    unique_id(uid, sizeof(uid), "health");
+    device_json(dev, sizeof(dev));
+
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Health\",\"unique_id\":\"%s\","
+             "\"state_topic\":\"%s\",\"payload_on\":\"PROBLEM\","
+             "\"payload_off\":\"OK\",\"device_class\":\"problem\","
+             "\"availability_topic\":\"%s\",\"icon\":\"mdi:heart-pulse\",%s}",
+             uid, state_topic, mqtt_state.base_topic, dev);
+    mqtt_publish_raw(topic, payload, 1);
+}
+
 static void publish_call_forward_switch_config(void) {
     char topic[256];
     char state_topic[256];
@@ -1355,6 +1378,9 @@ void mqtt_publish_discovery(void) {
     publish_number_config("vds_address", "VDS Address", "vds/address",
                           0, 250, 1, "", "numeric", "box");
     publish_call_forward_switch_config();
+    publish_health_config();
+    publish_sensor_config("health_detail", "Health Detail", "health/detail",
+                          "", "stethoscope");
 }
 
 void mqtt_publish_online(void) {
@@ -1391,6 +1417,11 @@ void mqtt_publish_video_enabled(int enabled) {
 void mqtt_publish_rtsp_enabled(int enabled) {
     mqtt_state.rtsp_enabled = enabled ? 1 : 0;
     publish_suffix("rtsp/enabled", enabled ? "ON" : "OFF", 1);
+}
+
+void mqtt_publish_health(int ok, const char* detail) {
+    publish_suffix("health/state", ok ? "OK" : "PROBLEM", 1);
+    publish_suffix("health/detail", detail ? detail : "", 1);
 }
 
 void mqtt_publish_vds_address(int address) {

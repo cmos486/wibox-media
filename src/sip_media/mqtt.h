@@ -40,6 +40,8 @@ void mqtt_publish_video_active(int active);
 void mqtt_publish_video_enabled(int enabled);
 void mqtt_publish_video_bitrate(int bitrate_kbps);
 void mqtt_publish_vds_address(int address);
+/* Overall health for Home Assistant: ok=1 plus a short reason when not. */
+void mqtt_publish_health(int ok, const char* detail);
 void mqtt_publish_sip_outgoing_call_enabled(int enabled);
 void mqtt_publish_hangup_on_door_unlock(int enabled);
 void mqtt_publish_outgoing_call_target(const char* target_uri);

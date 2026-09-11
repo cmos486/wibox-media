@@ -86,6 +86,18 @@ static pthread_mutex_t reboot_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int reboot_requested = 0;
 static pthread_mutex_t intercom_command_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t intercom_reopen_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+/*
+ * Audio input liveness. The capture hardware has been seen reporting success
+ * while delivering digital silence - every sample the A-law zero, 0xD5 - after
+ * the daemon was killed abruptly or the board was reset mid-flight. Nothing
+ * else notices: the engine runs, packets flow, and the stream is simply mute.
+ * So watch what is actually captured and treat sustained silence as a fault.
+ */
+static pthread_mutex_t audio_health_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int audio_input_peak = 0;            /* peak seen since last check */
+static unsigned long long audio_silent_since_ms = 0;
+static int audio_recovery_attempts = 0;
+
 /* Guards rtsp_line_opened_by_us. Lock order: rtsp_line_mutex before
  * intercom_command_mutex (taken inside ensure_intercom_call_open); nothing
  * acquires them the other way round. */
@@ -106,6 +118,11 @@ static int call_forward_restore_pending = 0;
 /* A line that dies sooner than this was refused rather than used. */
 #define RTSP_LINE_SHORT_LIVED_MS 5000ULL
 #define RTSP_LINE_MAX_BACKOFF_STEP 4
+/* A-law distance from the zero level below which the capture is considered
+ * dead. Room noise on a real bus measures well above this. */
+#define AUDIO_SILENCE_PEAK_MIN 4
+#define AUDIO_SILENCE_FAULT_MS 20000ULL
+#define AUDIO_SILENCE_MAX_RETRIES 3
 static long long intercom_last_close_ms = 0;
 static char intercom_last_close_reason[64] = "none";
 static char local_ip_addr[64] = "0.0.0.0";
@@ -2920,6 +2937,20 @@ static void* audio_input_handler(void* arg) {
 
         if (audio_input_is_muted()) {
             memset(audio_buffer, 0xD5, (size_t)bytes_read);
+        } else if (bytes_read > 0) {
+            /* Cheap liveness measure: how far the A-law bytes stray from the
+             * zero level. Real audio - even room noise - moves; a dead capture
+             * does not. No decoding needed, this runs per frame. */
+            int peak = 0;
+            ssize_t i;
+
+            for (i = 0; i < bytes_read; i++) {
+                int d = (int)audio_buffer[i] ^ 0xD5;
+                if (d > peak) peak = d;
+            }
+            pthread_mutex_lock(&audio_health_mutex);
+            if (peak > audio_input_peak) audio_input_peak = peak;
+            pthread_mutex_unlock(&audio_health_mutex);
         }
 
         // Always send RTP packet (either real audio or error pattern)
@@ -3494,11 +3525,13 @@ int main(int argc, char *argv[]) {
            app_config.sip_outgoing_call_enabled ? "enabled" : "disabled",
            app_config.outgoing_call_target);
     printf("Send '%s' to %s to trigger outgoing call\n", app_config.ding_message, app_config.sip_listen_pipe);
+    mqtt_publish_health(1, "ok");
 
     // Main event loop
     unsigned long long last_nat_keepalive = monotonic_ms();
     unsigned long long last_video_reconcile = monotonic_ms();
     unsigned long long last_line_reconcile = monotonic_ms();
+    unsigned long long last_audio_health_check = monotonic_ms();
 
     while (!quit_flag) {
         pj_time_val timeout = {0, 100};
@@ -3541,6 +3574,62 @@ int main(int argc, char *argv[]) {
                           reconcile_clients));
                 if (start_rtsp_preview_session("reconcile")) {
                     force_video_worker_idr("reconcile");
+                }
+            }
+        }
+
+        /*
+         * Audio input health. Only meaningful while the engine is running and
+         * actually feeding someone, so it is checked against the RTSP clients.
+         * A capture that stays flat for AUDIO_SILENCE_FAULT_MS is restarted;
+         * if a restart does not bring it back, the board is rebooted, because
+         * in the one case seen so far nothing short of that recovered it.
+         */
+        if (app_config.rtsp_enabled && (now - last_audio_health_check >= 5000ULL)) {
+            int peak;
+            int engine_on = get_audio_engine_running();
+            int listeners = rtsp_stream_get_audio_client_count() > 0;
+
+            last_audio_health_check = now;
+            pthread_mutex_lock(&audio_health_mutex);
+            peak = audio_input_peak;
+            audio_input_peak = 0;
+            pthread_mutex_unlock(&audio_health_mutex);
+
+            if (!engine_on || !listeners) {
+                audio_silent_since_ms = 0;
+                audio_recovery_attempts = 0;
+            } else if (peak > AUDIO_SILENCE_PEAK_MIN) {
+                if (audio_silent_since_ms != 0) {
+                    PJ_LOG(3,(THIS_FILE, "Audio input recovered (peak=%d)", peak));
+                    mqtt_publish_health(1, "ok");
+                }
+                audio_silent_since_ms = 0;
+                audio_recovery_attempts = 0;
+            } else {
+                if (audio_silent_since_ms == 0) {
+                    audio_silent_since_ms = now;
+                } else if (now - audio_silent_since_ms >= AUDIO_SILENCE_FAULT_MS) {
+                    audio_silent_since_ms = now;
+                    audio_recovery_attempts++;
+                    PJ_LOG(1,(THIS_FILE,
+                              "Audio input silent for %llu s while streaming "
+                              "(peak=%d); recovery attempt %d",
+                              AUDIO_SILENCE_FAULT_MS / 1000ULL, peak,
+                              audio_recovery_attempts));
+                    mqtt_publish_health(0, "audio input silent");
+                    if (audio_recovery_attempts == 1) {
+                        stop_audio_engine("audio-silent");
+                        usleep(500000);
+                        ensure_audio_engine_running("audio-recovery");
+                    } else if (audio_recovery_attempts >= AUDIO_SILENCE_MAX_RETRIES) {
+                        PJ_LOG(1,(THIS_FILE,
+                                  "Audio input still silent after %d attempts; "
+                                  "rebooting", audio_recovery_attempts));
+                        mqtt_publish_health(0, "audio input silent - rebooting");
+                        sync();
+                        reboot(RB_AUTOBOOT);
+                    }
                 }
             }
         }
