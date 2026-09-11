@@ -38,6 +38,23 @@ over the air.
   video-worker races). Most are also proposed upstream as PRs.
 - **RTSP authentication** guidance — see [SECURITY.md](SECURITY.md).
 
+## What was worked out along the way
+
+Much of the above exists because of behaviour that is documented nowhere and had
+to be established by experiment, on a bench built from a real Fermax
+installation. Written up separately, with the raw logs kept:
+
+- **[The VDS bus, explained](docs/vds-bus.md)** - addressing, why a wrong address
+  fails completely silently, how to set one without the pairing procedure (which
+  does not work on every monitor), and why audio and video need an auto
+  switch-on.
+- **[Sharing the bus with the original intercom](docs/coexistence.md)** - what
+  happens to the household's own monitor while this module is using the bus.
+  Tested, including the case that looked dangerous: opening the camera while
+  somebody is mid-conversation.
+- **[UART codes](docs/codes.md)** - the stock firmware's complete command set,
+  recovered from its binary, with the checksum proved.
+
 ## Home Assistant two-way audio (see + talk + open door, local and remote)
 
 A full self-hosted "answer the door" setup — video, talk-back and door from

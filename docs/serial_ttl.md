@@ -3,6 +3,10 @@
 Use a USB-to-TTL adapter for console access when telnet is unavailable or when
 the device needs recovery.
 
+> ⚡ **The board is 3.3 V.** Set the adapter's jumper to 3.3 V before connecting
+> anything - a 5 V adapter can damage it. Connect GND first, and do not power
+> the board from the adapter.
+
 ## Terminal
 
 Use `picocom` or `minicom` at `115200` baud with hardware flow control off:
