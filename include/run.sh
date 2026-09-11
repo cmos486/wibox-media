@@ -34,6 +34,22 @@ if command -v dropbear >/dev/null; then
   fi
 fi
 
+# Factory mode: hand the boot over to Fermax's own start-up script and run the
+# stock Sofia application instead of this firmware. Networking and SSH are
+# already up at this point, so the device stays reachable to turn it back off.
+#
+# It exists because some things can only be done by the original firmware -
+# notably VDS address programming (PB2), which lives inside the MCU and has
+# never been reproducible from here. Boot factory, pair the module against the
+# installation, boot back: the address stays in the MCU.
+#
+#   touch /mnt/mtd/factory && reboot     -> stock Fermax firmware
+#   rm /mnt/mtd/factory && reboot        -> back to wibox-media
+if [ -f "/mnt/mtd/factory" ] && [ -x "/usr/run-orig.sh" ]; then
+  echo "factory mode requested: handing over to /usr/run-orig.sh"
+  exec /usr/run-orig.sh
+fi
+
 for DIR in lock run fat32_0 cloud wifi; do
   mkdir -p /var/$DIR
 done
