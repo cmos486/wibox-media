@@ -104,6 +104,42 @@ the network):
 > Do **not** drive `firmware_update` as a foreground SSH child — WiFi drops
 > during the flash and would SIGHUP-kill it mid-write. `setsid` avoids that.
 
+## Flashing an image by hand
+
+`firmware_update` can also install a specific image instead of whatever GitHub
+says is latest - needed when the device cannot reach GitHub, and the only way to
+test a build that is not a release yet:
+
+    # copy it across (the device has no scp)
+    ssh root@<device> 'cat > /tmp/fw.img' < wibox-media-vX.Y.Z.img
+    ssh root@<device> 'md5sum /tmp/fw.img'      # must match MD5SUMS
+
+    # flash, detached, without rebooting
+    firmware_update --image /tmp/fw.img --expected-md5 <md5> --no-reboot
+
+Wait for `flash verification OK` in the log, then reboot. The network drops
+during the flash, so drive this from the serial console, or detach it with
+`setsid` and read `/tmp/ota.log` over serial afterwards.
+
+## What lives outside this repository
+
+Some things this fork depends on are deliberately **not** in git. If you have
+only the repo, you can read and change the code and the docs, but you cannot
+build or release:
+
+| What | Where | Why it is not here |
+|---|---|---|
+| Base build image `wibox-build:latest` | `~/wibox/wibox-build-base/`, notes in `~/wibox/BUILD-NOTES.md` | Contains the proprietary Goke GK710X SDK. Not redistributable, which is also why there is no public CI. |
+| `fork-release.sh`, `fork-push.sh`, `fork-about.sh` | `~/wibox/` | Take a GitHub token from the environment. |
+| Device backups (7 partitions, md5-verified) | `~/wibox/backup-<date>/` with a MANIFEST | Contains per-device identifiers. |
+| Bench and debug helpers (`lab-*.sh`) | `~/wibox/` | Throwaway tooling for a test rig, and they carry device credentials. |
+| Device IP, SSH and RTSP credentials | Not written down in git | Obvious reasons. |
+
+What they encode that *does* matter is written up in the docs instead - the
+[UART codes](docs/codes.md), [the VDS bus](docs/vds-bus.md) and
+[coexistence](docs/coexistence.md) pages exist so the knowledge survives the
+scripts.
+
 ## Rebasing onto a new upstream release
 
 When upstream tags a new version:

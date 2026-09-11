@@ -167,6 +167,45 @@ it took the one time this was seen. Recovery is logged and the state published.
 Home Assistant gets a `Health` problem binary sensor and a `Health Detail`
 sensor, so a mute stream shows up as a fault instead of as a puzzled user.
 
+## Scheduled maintenance
+
+```ini
+timezone=CET-1CEST,M3.5.0,M10.5.0/3
+daily_reboot_enabled=0
+daily_reboot_hour=4
+daily_reboot_minute=0
+```
+
+**`timezone`** is a POSIX TZ string, written to `/etc/TZ` at startup; the default
+is peninsular Spain. The board has no RTC, so it boots believing it is 1970 and
+only becomes correct once `ntpd` has run - logs from the first seconds of a boot
+are expected to be wrong. Everything that measures an interval uses a monotonic
+clock and is unaffected; the scheduled reboot below is the only feature that
+reads wall time, which is why it is careful.
+
+**`daily_reboot_enabled`** is off by default, and there is no hidden reboot
+anywhere else. The stock image rebooted every Saturday at 03:15 from a cron entry
+with no way to see it, change it, or stop it cutting a call in half - on a clock
+that was never synchronised, so the hour meant nothing. This replaces it with
+something you can see and switch off.
+
+When enabled, the daemon checks every 30 s and reboots once inside the hour that
+follows `daily_reboot_hour:daily_reboot_minute` in **local** time, with three
+safeguards worth knowing:
+
+- 🕐 It **ignores an obviously wrong clock** (anything before late 2023), so a
+  board that has not reached `ntpd` yet cannot reboot itself in a loop.
+- 📅 It **remembers the day it last fired**, so stepping the clock cannot make it
+  fire twice.
+- 📞 It **never cuts anyone off**: if a call is up or anyone is streaming, it logs
+  `Scheduled reboot due but the intercom is in use; waiting` and retries through
+  the rest of the hour.
+
+Both are also exposed to Home Assistant as **Daily Reboot** (switch) and **Daily
+Reboot Hour** (number), and changes made there are written back to
+`sip_media.conf` - a reboot that forgot it was scheduled would switch itself off
+every time it ran.
+
 The daemon can expose an RTSP/TCP interleaved stream for go2rtc, Frigate or VLC:
 
 ```ini
