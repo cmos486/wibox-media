@@ -95,6 +95,14 @@ static unsigned long long rtsp_line_opened_at_ms = 0;
 static unsigned long long rtsp_line_retry_after_ms = 0;
 static int rtsp_line_open_failures = 0;
 static int rtsp_line_capped = 0;
+
+/* Call-forward (divert) tracking, all touched only from the serial thread. */
+static int call_forward_state = -1;              /* last state the MCU reported */
+static unsigned long long call_forward_off_ms = 0;
+static int call_forward_restore_pending = 0;
+/* PUSH_STATE_0 and MCU_STATE_1 arrive in one 8-byte UART read when address
+ * programming starts, so anything wider than a few ms is a user action. */
+#define CALL_FORWARD_PAIRED_WINDOW_MS 500ULL
 /* A line that dies sooner than this was refused rather than used. */
 #define RTSP_LINE_SHORT_LIVED_MS 5000ULL
 #define RTSP_LINE_MAX_BACKOFF_STEP 4
@@ -2539,15 +2547,47 @@ static void handle_uart_frame(const unsigned char frame[4]) {
     case UART_CODE_PUSH_STATE_0:
         prometheus_inc_uart_push_state();
         PJ_LOG(3,(THIS_FILE, "Intercom call forwarding state is inactive"));
+        if (call_forward_state == 1) {
+            call_forward_off_ms = monotonic_ms();
+        }
+        call_forward_state = 0;
         mqtt_publish_call_forward_enabled(0);
         break;
     case UART_CODE_PUSH_STATE_1:
         prometheus_inc_uart_push_state();
         PJ_LOG(3,(THIS_FILE, "Intercom call forwarding state is active"));
+        call_forward_state = 1;
+        call_forward_off_ms = 0;
+        call_forward_restore_pending = 0;
         mqtt_publish_call_forward_enabled(1);
         break;
-    case UART_CODE_MCU_STATE_0:
     case UART_CODE_MCU_STATE_1:
+        /*
+         * Entering VDS address programming mode. The MCU switches call
+         * forwarding off as a side effect, reporting PUSH_STATE_0 in the very
+         * same UART read that carries this frame, and nothing turns it back on
+         * - which silently leaves the module unable to report calls after an
+         * address programming attempt. Tell that apart from the user pressing
+         * PB1 (which never comes paired with a mode change) and restore it when
+         * programming ends.
+         */
+        if (call_forward_off_ms != 0 &&
+            monotonic_ms() - call_forward_off_ms <= CALL_FORWARD_PAIRED_WINDOW_MS) {
+            call_forward_restore_pending = 1;
+            PJ_LOG(3,(THIS_FILE,
+                      "Address programming turned call forwarding off; "
+                      "will restore it on exit"));
+        }
+        break;
+    case UART_CODE_MCU_STATE_0:
+        if (call_forward_restore_pending) {
+            call_forward_restore_pending = 0;
+            PJ_LOG(2,(THIS_FILE,
+                      "Address programming finished; re-enabling call forwarding"));
+            if (intercom_send_command(INTERCOM_CMD_ENABLE_PUSH_STATE) != 0) {
+                PJ_LOG(2,(THIS_FILE, "Failed to re-enable call forwarding"));
+            }
+        }
         break;
     case UART_CODE_CMD_DOWN_LONG_1:
         wifi_button_long_started_ms = now_ms();

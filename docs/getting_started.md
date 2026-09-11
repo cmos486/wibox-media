@@ -296,7 +296,24 @@ on **PB2**, then within 10 seconds press the **door-release button on the
 monitor** (not the call button on the outdoor panel). See
 [UART codes](codes.md#programming-the-vds-address) for the details and the
 gotchas. The address cannot be set over the UART - the MCU ignores a written
-`SAVE_ADDR`.
+`SAVE_ADDR`, and so does the stock firmware's own protocol
+([the complete command set](codes.md#what-the-stock-firmware-can-send-complete)
+contains no address write).
+
+**Known limitation - programming against a non-VEO terminal.** On a bench with a
+**LOFT VDS** monitor and a CITY CLASSIC VDS pushbutton panel, the documented PB2
+procedure never captured an address across six attempts (bus idle, during an
+incoming call, with an auto switch-on up, pressing the panel call button,
+pressing the monitor's door-release, and injecting the WiBox's own door-release
+frame). Ruled out along the way, each with evidence: wiring and bus reception
+(the MCU reports the panel's `HANG_UP`, which can only arrive over the bus);
+programming mode itself (`MCU_STATE_1` appears every time); a missing frame (the
+monitor's door-release opens the street door from idle, so it is on the bus); and
+fixing it from the panel (a pushbutton VDS panel derives the call code from the
+button's physical position). The best clue is that **while the WiBox sits in
+programming mode the monitor's door-release stops opening the door**, i.e. the
+module appears to seize the bus in that mode, which would make capturing another
+terminal's frame impossible. Fermax documents the Wi-Box against a VEO monitor.
 
 A correctly detected outside-panel call appears in the daemon log as:
 

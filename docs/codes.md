@@ -3,11 +3,17 @@
 Device is `/dev/ttySGK1`.
 Direction `in` means read, `out` means write.
 
-All codes start with hex `FB` and end with a CRC code. Sofia app outputs it as `uCrc` with two integer values.
-`uCrc` output value is sum of all bytes, and sum of 11 (`xB`) and the data values.
+All codes start with hex `FB` and end with a CRC code.
 
-Given code `FB 20 00`, CRC last value = `B + 20 + 00` = `0x2B`.
-`uCrc = 326, 43`
+The CRC is the **sum of every byte in the frame, modulo 240** - confirmed in the
+stock binary's frame builder (`mov r1, #240` right before the modulo call). The
+handy shortcut `CRC = b1 + b2 + 0x0B` follows from it, because `0xFB mod 240 = 11`.
+
+Given code `FB 20 00`, CRC = `(0xFB + 0x20 + 0x00) mod 240` = `B + 20 + 00` = `0x2B`.
+
+Frames are 4 bytes (3 payload + CRC). The builder also supports a 7-byte form
+(6 payload + CRC) and the receive logger has a 7-value format string, so the MCU
+can send the long form, but the stock app never does.
 
 | Code | Direction | Name | Description |
 |------|-----------|------|-------------|
@@ -36,6 +42,33 @@ Given code `FB 20 00`, CRC last value = `B + 20 + 00` = `0x2B`.
 | `FB 24 01 30` | in | CMD_DOWN_LONG 0x01 | Physical WiFi long-press stage 1, observed on GK7102S hardware. |
 | `FB 24 02 31` | in | CMD_DOWN_LONG 0x02 | Long-press completion, observed about 3 seconds after stage 1. The custom daemon requires the ordered pair within 10 seconds before requesting AP mode. |
 | `FB 26 00 31` | in | CMD_FAC_SSID_POSTFIX 0x00 | Unknown, received on booting new version B013. |
+
+## What the stock firmware can send (complete)
+
+Recovered by disassembling the original Fermax `Sofia` binary. The whole transmit
+path is two functions - `uart_write(buf,len)` with a single caller, and a frame
+builder with ten - so this table is the **complete** set of commands the stock
+app can send to the MCU, not a sample of what happened to be observed. Function
+names and line numbers come from the binary's own error strings
+(`app/Functions/Uart.cpp`).
+
+| Frame | Uart.cpp | Function |
+|-------|----------|----------|
+| `FB 10 00` | - | init / mode |
+| `FB 10 xx` | - | init; `xx` is a device field, on one unit it equalled that unit's VDS address |
+| `FB 12 01` | 698 | `UnlockChnLock` - open the door |
+| `FB 14 xx` | 535 | `OpenDoorBell` |
+| `FB 14 00` | 546 | `CloseDoorBell` |
+| `FB 15 00` | 619 | `CallGuard` |
+| `FB 17 01` | 577 | `CallF1Func` |
+| `FB 17 00` | 597 | `F1FuncOff` |
+| `FB 19 xx` | 477 | `SetPushState` |
+| `FB 25 xx` | 607 | `NoticeLedTest` |
+
+**There is no command that writes the VDS address.** Not even Fermax's own app
+programs it over the UART, which is why no amount of poking sets it: `FB 18 xx`
+(SAVE_ADDR) is report-only, and `FB 10 xx` is ignored by the MCU both when idle
+and while in address programming mode.
 
 ## Reading the programmed VDS address
 
