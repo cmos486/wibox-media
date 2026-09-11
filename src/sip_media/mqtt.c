@@ -639,7 +639,8 @@ static void publish_call_event_config(void) {
 
 static void publish_number_config(const char* object_id, const char* name,
                                   const char* topic_suffix, int min, int max,
-                                  int step, const char* unit, const char* icon) {
+                                  int step, const char* unit, const char* icon,
+                                  const char* mode) {
     char topic[256];
     char state_topic[256];
     char command_topic[256];
@@ -666,9 +667,9 @@ static void publish_number_config(const char* object_id, const char* name,
     snprintf(payload, sizeof(payload),
              "{\"name\":\"%s\",\"unique_id\":\"%s\","
              "\"state_topic\":\"%s\",\"command_topic\":\"%s\","
-             "\"min\":%d,\"max\":%d,\"step\":%d,\"mode\":\"slider\","
+             "\"min\":%d,\"max\":%d,\"step\":%d,\"mode\":\"%s\","
              "\"retain\":true,\"availability_topic\":\"%s\",%s%s%s}",
-             name, uid, state_topic, command_topic, min, max, step,
+             name, uid, state_topic, command_topic, min, max, step, mode ? mode : "slider",
              mqtt_state.base_topic, unit_part, icon_part, dev);
     mqtt_publish_raw(topic, payload, 1);
 }
@@ -1342,15 +1343,17 @@ void mqtt_publish_discovery(void) {
     publish_sip_outgoing_call_switch_config();
     publish_hangup_on_door_unlock_switch_config();
     publish_number_config("video_bitrate", "Video Bitrate", "video/bitrate_kbps",
-                          512, 4096, 256, "kbps", "video-high-definition");
+                          512, 4096, 256, "kbps", "video-high-definition", "slider");
     publish_outgoing_call_target_config();
     publish_outgoing_call_timeout_config();
     publish_number_config("ring_snapshot_delay", "Ring Snapshot Delay",
-                          "snapshot/ring_delay_ms", 0, 5000, 500, "ms", "timer-outline");
+                          "snapshot/ring_delay_ms", 0, 5000, 500, "ms", "timer-outline",
+                          "slider");
     /* 250 means "unprogrammed": the MCU reports it after the address is cleared
      * with five short presses of PB2, and only then does it accept a new one. */
+    /* A box, not a slider: picking one value out of 251 by dragging is hopeless. */
     publish_number_config("vds_address", "VDS Address", "vds/address",
-                          0, 250, 1, "", "numeric");
+                          0, 250, 1, "", "numeric", "box");
     publish_call_forward_switch_config();
 }
 
@@ -1898,6 +1901,7 @@ static int mqtt_subscribe_topics(void) {
         "call/target_uri/set",
         "call/timeout_seconds/set",
         "call_forward/enabled/set",
+        "vds/address/set",
         "firmware/update/install/set",
         "firmware/update/check/set"
     };

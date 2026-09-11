@@ -2574,8 +2574,18 @@ static void handle_uart_frame(const unsigned char frame[4]) {
         break;
     case UART_CODE_CMD_RESET:
         prometheus_inc_uart_reset();
-        PJ_LOG(2,(THIS_FILE, "Reset command received from panel"));
-        system("sync && reboot");
+        /*
+         * Do NOT reboot here. The MCU sends this after five short presses of
+         * PB2, which is also what clears its VDS address - and the boot runs
+         * Fermax's Sofia_temp.sh warm-up, whose Sofia writes its own configured
+         * address straight back into the freshly emptied MCU. Rebooting would
+         * therefore close the only window in which a new address can be
+         * written. The module keeps running, the event is still published, and
+         * the VDS Address entity shows 250 until a new address is set.
+         */
+        PJ_LOG(2,(THIS_FILE,
+                  "Reset command received from module buttons; not rebooting "
+                  "so the VDS address can be reprogrammed"));
         break;
     case UART_CODE_STA_TO_AP:
         /* Retain compatibility with MCU revisions that emit the direct frame. */
