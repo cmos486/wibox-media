@@ -132,3 +132,10 @@ see the visitor, talk, and open the door — at home or away.
 - **Verifying talk-back reaches the WiBox**: on the device,
   `grep "backchannel audio pkt" /var/log/wibox-media-daemon.log` should show
   packets with `audio_len` and **zero** `send AO frame failed`.
+- **Your voice arrives at the panel chopped**: when the last client leaves, the
+  daemon logs `backchannel playout stopped (overruns=N underruns=M)`. Both
+  should be 0 or close to it. Many underruns mean the jitter buffer is running
+  dry — usually a network dropping packets on the way to the WiBox, since the
+  buffer holds 200 ms. Many overruns mean audio is arriving faster than 8 kHz
+  real time, which only happens when something feeds the backchannel from a
+  file rather than a live microphone.

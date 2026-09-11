@@ -18,6 +18,11 @@ over the air.
   clients fall back to TCP), a video-worker lifecycle reconcile (go2rtc's
   probe+reconnect no longer leaves the stream stuck with no worker), and correct
   RTP parsing + reframing of the WebRTC microphone audio into the backchannel.
+- **A jitter buffer on the microphone path** so the voice heard at the panel is
+  not chopped: WebRTC delivers audio in bursts, and the AO write neither blocks
+  for the frame duration nor paces itself, so playing straight off the socket
+  ran dry constantly. A dedicated thread now drains a 200 ms ring on its own
+  8 kHz clock (measured: 117 buffer underruns in 30 s before, 0 after).
 - **The VDS bus line follows the RTSP viewers** (`rtsp_intercom_line_enabled`):
   the MCU only bridges the outdoor panel onto the module while an intercom call
   line is up, so without it a camera card shows the blue no-signal screen and
