@@ -71,6 +71,9 @@ static void *client_callback_user_data = NULL;
 static int last_video_client_count = -1;
 static int last_audio_client_count = -1;
 
+static void bc_playout_start(void);
+static void bc_playout_stop(void);
+
 static int count_video_clients_locked(void)
 {
     int i;
@@ -511,6 +514,7 @@ static void handle_setup(rtsp_client_t *client, int cseq, const char *req,
     if (is_backchannel) {
         client->has_backchannel = 1;
         client->backchannel_channel = rtp_channel;
+        bc_playout_start();
     } else if (is_audio) {
         client->has_audio = 1;
         client->audio_channel = rtp_channel;
@@ -555,6 +559,182 @@ static void handle_pause(rtsp_client_t *client, int cseq)
     snprintf(extra, sizeof(extra), "Session: %08x\r\n", client->session_id);
     rtsp_send_simple(client, cseq, 200, "OK", extra, NULL, NULL);
     notify_client_count();
+}
+
+/*
+ * Backchannel playout.
+ *
+ * The AO write is blocking: it paces itself at real time. Feeding it straight
+ * from the socket thread therefore couples playback to network arrival, and any
+ * late packet becomes an audible gap - the chopping heard on the outdoor panel.
+ * WebRTC delivers in bursts with jitter by nature, so the two have to be
+ * decoupled: the socket thread only drops audio into a ring, and a dedicated
+ * thread drains it into the AO at the AO's own pace.
+ *
+ * Playback waits for BC_PREBUFFER_BYTES before starting so there is something to
+ * absorb jitter with, and stops again if the ring runs dry, rather than emitting
+ * fragments. The ring is deliberately small: this is a doorbell, and stale audio
+ * is worse than dropped audio.
+ */
+#define BC_RING_BYTES      16000   /* 2 s of PCMA at 8 kHz */
+#define BC_PREBUFFER_BYTES  1600   /* 200 ms before playback starts */
+
+static pthread_mutex_t bc_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t bc_cond = PTHREAD_COND_INITIALIZER;
+static unsigned char bc_ring[BC_RING_BYTES];
+static size_t bc_head = 0;      /* write position */
+static size_t bc_tail = 0;      /* read position */
+static size_t bc_fill = 0;      /* bytes available */
+static int bc_thread_running = 0;
+static pthread_t bc_thread;
+static unsigned long bc_overruns = 0;
+static unsigned long bc_underruns = 0;
+
+static void bc_ring_push(const unsigned char *data, size_t len)
+{
+    size_t i;
+
+    pthread_mutex_lock(&bc_mutex);
+    for (i = 0; i < len; i++) {
+        if (bc_fill == sizeof(bc_ring)) {
+            /* Overrun: drop the oldest byte. Better a brief skip than a growing
+             * delay between what is said and what the visitor hears. */
+            bc_tail = (bc_tail + 1) % sizeof(bc_ring);
+            bc_fill--;
+            bc_overruns++;
+        }
+        bc_ring[bc_head] = data[i];
+        bc_head = (bc_head + 1) % sizeof(bc_ring);
+        bc_fill++;
+    }
+    pthread_cond_signal(&bc_cond);
+    pthread_mutex_unlock(&bc_mutex);
+}
+
+static void *bc_playout_thread(void *arg)
+{
+    unsigned char frame[512];
+    int ao_ok = 1;
+    int playing = 0;
+    unsigned long long probe = 0;
+    long long next_us = 0;
+    struct timespec start;
+
+    (void)arg;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    next_us = (long long)start.tv_sec * 1000000LL + start.tv_nsec / 1000LL;
+    while (1) {
+        size_t ao_frame = (size_t)audio_hw_frame_size();
+        size_t i;
+
+        if (ao_frame == 0 || ao_frame > sizeof(frame)) {
+            ao_frame = 160;
+        }
+
+        pthread_mutex_lock(&bc_mutex);
+        while (bc_thread_running &&
+               (playing ? bc_fill < ao_frame : bc_fill < BC_PREBUFFER_BYTES)) {
+            if (playing && bc_fill < ao_frame) {
+                playing = 0;          /* ran dry: re-buffer before resuming */
+                bc_underruns++;
+                next_us = 0;          /* restart the clock when playback resumes */
+            }
+            pthread_cond_wait(&bc_cond, &bc_mutex);
+        }
+        if (!bc_thread_running) {
+            pthread_mutex_unlock(&bc_mutex);
+            break;
+        }
+        if (!playing) {
+            struct timespec resume;
+
+            clock_gettime(CLOCK_MONOTONIC, &resume);
+            next_us = (long long)resume.tv_sec * 1000000LL + resume.tv_nsec / 1000LL;
+        }
+        playing = 1;
+        for (i = 0; i < ao_frame; i++) {
+            frame[i] = bc_ring[bc_tail];
+            bc_tail = (bc_tail + 1) % sizeof(bc_ring);
+        }
+        bc_fill -= ao_frame;
+        pthread_mutex_unlock(&bc_mutex);
+
+        /* Throttle a failing AO (no speaker on a bench) so it stops hammering
+         * the shared audio subsystem, re-probing now and then to recover. */
+        if (ao_ok || (++probe % 250ULL) == 0ULL) {
+            ao_ok = (audio_hw_send_frame(frame, ao_frame) == 0);
+        }
+
+        /*
+         * Pace the playout ourselves. The AO write does not block for the
+         * duration of the frame - measured: draining as fast as the loop runs
+         * emptied a 200 ms buffer over a hundred times in half a minute, which
+         * is the chopping heard on the panel. One frame is ao_frame samples at
+         * 8 kHz, so 125 us per sample; sleep until that deadline rather than a
+         * fixed delay, so a slow write shortens the next wait instead of
+         * accumulating drift.
+         */
+        {
+            struct timespec now;
+            long long wait_us;
+
+            next_us += (long long)ao_frame * 125LL;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            wait_us = next_us - ((long long)now.tv_sec * 1000000LL +
+                                 now.tv_nsec / 1000LL);
+            if (wait_us > 0) {
+                usleep((unsigned int)wait_us);
+            } else if (wait_us < -200000LL) {
+                /* Fell far behind (a stall elsewhere): resynchronise instead of
+                 * trying to catch up by racing. */
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                next_us = (long long)now.tv_sec * 1000000LL + now.tv_nsec / 1000LL;
+            }
+        }
+    }
+    return NULL;
+}
+
+static void bc_playout_start(void)
+{
+    pthread_mutex_lock(&bc_mutex);
+    if (bc_thread_running) {
+        pthread_mutex_unlock(&bc_mutex);
+        return;
+    }
+    bc_head = bc_tail = bc_fill = 0;
+    bc_thread_running = 1;
+    pthread_mutex_unlock(&bc_mutex);
+
+    if (pthread_create(&bc_thread, NULL, bc_playout_thread, NULL) != 0) {
+        pthread_mutex_lock(&bc_mutex);
+        bc_thread_running = 0;
+        pthread_mutex_unlock(&bc_mutex);
+        printf("rtsp: failed to start backchannel playout thread\n");
+        return;
+    }
+    printf("rtsp: backchannel playout thread started\n");
+}
+
+static void bc_playout_stop(void)
+{
+    pthread_t thread;
+
+    pthread_mutex_lock(&bc_mutex);
+    if (!bc_thread_running) {
+        pthread_mutex_unlock(&bc_mutex);
+        return;
+    }
+    bc_thread_running = 0;
+    thread = bc_thread;
+    pthread_cond_broadcast(&bc_cond);
+    pthread_mutex_unlock(&bc_mutex);
+
+    pthread_join(thread, NULL);
+    printf("rtsp: backchannel playout stopped (overruns=%lu underruns=%lu)\n",
+           bc_overruns, bc_underruns);
+    bc_overruns = 0;
+    bc_underruns = 0;
 }
 
 /* G.711 A-law -> linear, for the backchannel level probe below. */
@@ -680,19 +860,15 @@ static int read_rtsp_request(rtsp_client_t *client, int fd, char *buf, size_t si
                          * GADI subsystem - it destabilizes the shared audio/video
                          * hardware and floods the log. Re-probe occasionally so it
                          * recovers automatically once the speaker works. */
-                        static unsigned int bc_pkt = 0;
-                        static int bc_ao_ok = 1;
                         /* go2rtc/WebRTC delivers large PCMA chunks (observed
-                         * 1024 bytes) but the AO driver accepts only exactly
-                         * frame_size samples (160 = 20ms) and rejects anything
-                         * else with -2001. Buffer the incoming audio and feed it
-                         * out in fixed frames so two-way audio actually plays. */
-                        static unsigned char bc_buf[4096];
-                        static size_t bc_buf_len = 0;
+                         * 1024 bytes) while the AO accepts only exactly
+                         * frame_size samples, so the ring also does the
+                         * reframing: bytes in, fixed frames out. */
+                        static unsigned int bc_pkt = 0;
                         size_t ao_frame = (size_t)audio_hw_frame_size();
-                        int try_send;
+
                         bc_pkt++;
-                        if (ao_frame == 0 || ao_frame > sizeof(bc_buf)) {
+                        if (ao_frame == 0) {
                             ao_frame = 160;
                         }
                         if (bc_pkt == 1U || (bc_pkt % 250U == 0U)) {
@@ -709,25 +885,9 @@ static int read_rtsp_request(rtsp_client_t *client, int fd, char *buf, size_t si
                                    (rtp[0] & 0x20) ? 1 : 0, ao_frame,
                                    alaw_peak_level(rtp + hdr, audio_len));
                         }
-                        if (bc_buf_len + audio_len > sizeof(bc_buf)) {
-                            bc_buf_len = 0; /* desync guard: drop stale partial */
-                        }
-                        if (audio_len <= sizeof(bc_buf) - bc_buf_len) {
-                            memcpy(bc_buf + bc_buf_len, rtp + hdr, audio_len);
-                            bc_buf_len += audio_len;
-                        }
-                        try_send = bc_ao_ok || (bc_pkt % 250U == 0U);
-                        while (bc_buf_len >= ao_frame) {
-                            if (try_send) {
-                                bc_ao_ok = (audio_hw_send_frame(bc_buf,
-                                                ao_frame) == 0);
-                                try_send = bc_ao_ok;
-                            }
-                            bc_buf_len -= ao_frame;
-                            if (bc_buf_len > 0) {
-                                memmove(bc_buf, bc_buf + ao_frame, bc_buf_len);
-                            }
-                        }
+                        /* Hand off and get straight back to reading the
+                         * socket. The playout thread owns the AO from here. */
+                        bc_ring_push(rtp + hdr, audio_len);
                     }
                 }
                 consume_rx_bytes(rxbuf, rxlen, frame_len);
@@ -847,7 +1007,21 @@ static void *client_thread_func(void *arg)
         pthread_mutex_unlock(&clients[idx].send_mutex);
     }
     clients[idx].thread_running = 0;
-    pthread_mutex_unlock(&clients_mutex);
+    {
+        int others = 0;
+        int i;
+
+        for (i = 0; i < MAX_RTSP_CLIENTS; i++) {
+            if (i != idx && clients[i].active && clients[i].has_backchannel) {
+                others = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&clients_mutex);
+        if (!others) {
+            bc_playout_stop();
+        }
+    }
     notify_client_count();
     printf("rtsp: client disconnected slot=%d\n", idx);
     return NULL;
